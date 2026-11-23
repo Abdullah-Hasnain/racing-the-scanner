@@ -27,11 +27,11 @@ AI triage to keep false alarms down.
         +--------------------------------------------------------+
 ```
 
-- **memory/** (Member 1): the hiding payloads and the scanner. Linux.
-- **sim/** (Member 2): the scheduling comparison. The attacker shapes timing to
+- **memory/** (Khan): the hiding payloads and the scanner. Linux.
+- **sim/** (Hasnain): the scheduling comparison. The attacker shapes timing to
   evade the ML schedulers; the invariant resists because it reserves CPU without
   judging anyone. Pure Python, runs anywhere. This is the core deliverable.
-- **detection/** (Member 3): Tracee + AI triage + the integrated evaluation.
+- **detection/** (Ibad): Tracee + AI triage + the integrated evaluation.
 
 ## Why a simulation is the core
 

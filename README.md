@@ -26,9 +26,9 @@ Separately, because normal apps (Node.js JIT, Go/Java GC, jemalloc) use the same
 
 | Path | Owner | What's in it |
 |------|-------|--------------|
-| `sim/` | Member 2 | The scheduler simulation, the ~15 ML policies, the invariant, the mimicry attacker, metrics. **The core deliverable.** |
-| `memory/` | Member 1 | The four hiding payloads (V1-V4) in C and the live RAM scanner. Linux only. |
-| `detection/` | Member 3 | Aqua Tracee policies, the per-PID log aggregator, the local-LLM triage, benign workload runners. |
+| `sim/` | Hasnain (@Abdullah-Hasnain) | The scheduler simulation, the ~15 ML policies, the invariant, the mimicry attacker, metrics. **The core deliverable.** |
+| `memory/` | Khan (@khan-slayer) | The four hiding payloads (V1-V4) in C and the live RAM scanner. Linux only. |
+| `detection/` | Ibad (@vanodew1) | Aqua Tracee policies, the per-PID log aggregator, the local-LLM triage, benign workload runners. |
 | `analysis/` | shared | Builds graphs G1-G6 from `results/`. |
 | `docs/` | all | Architecture, hardware roles, per-OS setup guides. |
 | `scripts/` | all | Setup, demo, and issue-creation helpers. |

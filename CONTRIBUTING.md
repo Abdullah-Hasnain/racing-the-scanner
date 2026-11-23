@@ -7,9 +7,9 @@ other. Read this once before your first PR.
 
 | Area | Owner | Files |
 |------|-------|-------|
-| Memory + scanner | Member 1 | `memory/**` |
-| Scheduler sim + policies | Member 2 | `sim/**` |
-| Detection + integration | Member 3 | `detection/**`, `analysis/**` |
+| Memory + scanner | Khan (@khan-slayer) | `memory/**` |
+| Scheduler sim + policies | Hasnain (@Abdullah-Hasnain) | `sim/**` |
+| Detection + integration | Ibad (@vanodew1) | `detection/**`, `analysis/**` |
 
 Shared files (`README.md`, `docs/**`, `.github/**`, root configs) change through
 small PRs. If you need to touch another person's area, say so on the issue first.

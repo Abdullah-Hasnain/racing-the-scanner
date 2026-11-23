@@ -1,4 +1,4 @@
-# Detection layer (Member 3)
+# Detection layer (Ibad)
 
 Aqua Tracee plus a local-LLM triage layer, and the integrated evaluation.
 
