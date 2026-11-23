@@ -1,4 +1,4 @@
-# Memory layer (Member 1)
+# Memory layer (Khan)
 
 The four hiding payloads and the live RAM scanner. **Linux only** (kernel 6.12+
 for the full project; V4 needs secret memory enabled). Build on the MacBook's
@@ -31,7 +31,7 @@ python scanner/scanner.py --pid <PID> --interval 0.1 --duration 30
 
 The scanner reports a catch rate. V1 should be ~100%. V2/V3 fall as the scan
 interval grows or dwell time shrinks (that is G1). V4 should be ~0% from the RAM
-scanner: it is the case only Tracee's syscall view (Member 3) can flag.
+scanner: it is the case only Tracee's syscall view (Ibad) can flag.
 
 ## First issues
 

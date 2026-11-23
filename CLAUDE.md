@@ -13,11 +13,11 @@ and `docs/architecture.md`.
 
 ## Structure and ownership
 
-- `sim/` (Member 2): the scheduler simulation and the 15-policy sweep. **The core
+- `sim/` (Hasnain): the scheduler simulation and the 15-policy sweep. **The core
   deliverable.** Pure Python, CPU-only, runs on any machine.
-- `memory/` (Member 1): V1-V4 hiding payloads (C) and the live RAM scanner. Linux
+- `memory/` (Khan): V1-V4 hiding payloads (C) and the live RAM scanner. Linux
   kernel 6.12+.
-- `detection/` (Member 3): Aqua Tracee policy, per-PID aggregator, local-LLM
+- `detection/` (Ibad): Aqua Tracee policy, per-PID aggregator, local-LLM
   triage, benign workload suite.
 - `analysis/`: builds the figures G1-G6 from `results/`.
 

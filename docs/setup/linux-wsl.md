@@ -39,7 +39,7 @@ python scanner/scanner.py --pid <PID> --interval 0.1 --duration 20
 - **userfaultfd (V3):** usually available; if it errors, check
   `sysctl vm.unprivileged_userfaultfd`.
 
-## Aqua Tracee (Member 3)
+## Aqua Tracee (Ibad)
 
 Install the Tracee binary (see the Aqua docs) and run it against a target:
 ```bash
