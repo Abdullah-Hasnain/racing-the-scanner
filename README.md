@@ -1,0 +1,103 @@
+# Racing the Scanner
+
+**Comparing baseline, ML-augmented, and invariant Linux scheduling frameworks against memory-hiding and mimicry-starvation attacks.**
+
+Operating Systems course project, Habib University. Three members, five machines.
+
+---
+
+## What this project is
+
+A live RAM scanner can only catch a memory-hiding process during the few milliseconds it exposes a page. The scanner needs CPU to run, so whoever controls the scheduler controls whether the scanner runs in time. Detection is a race for CPU.
+
+We study that race. An unprivileged attacker (1) hides its data with virtual-memory tricks and (2) shapes its CPU timing to look benign so it can hog the processor and delay the scanner past the exposure window. Then we compare how different **scheduling frameworks** keep the monitor running on time under that attack:
+
+- **S0 Baseline:** stock Linux EEVDF (the control).
+- **S2 Augmented (ML):** a family of ~15 ML-augmented schedulers, swept through one shared harness.
+- **S3 Invariant:** a hard CPU-reservation floor that guarantees the monitor its share regardless of any model.
+
+Separately, because normal apps (Node.js JIT, Go/Java GC, jemalloc) use the same memory syscalls as the attacker, we test whether pairing Aqua Tracee with a small local-LLM triage layer cuts false alarms.
+
+> Full rationale and the research question live in `docs/architecture.md`. The written proposal is the source of truth for scope.
+
+---
+
+## Repository map
+
+| Path | Owner | What's in it |
+|------|-------|--------------|
+| `sim/` | Member 2 | The scheduler simulation, the ~15 ML policies, the invariant, the mimicry attacker, metrics. **The core deliverable.** |
+| `memory/` | Member 1 | The four hiding payloads (V1-V4) in C and the live RAM scanner. Linux only. |
+| `detection/` | Member 3 | Aqua Tracee policies, the per-PID log aggregator, the local-LLM triage, benign workload runners. |
+| `analysis/` | shared | Builds graphs G1-G6 from `results/`. |
+| `docs/` | all | Architecture, hardware roles, per-OS setup guides. |
+| `scripts/` | all | Setup, demo, and issue-creation helpers. |
+| `.github/` | all | CI workflows and issue/PR templates. |
+
+Everyone reads `docs/architecture.md` and `CONTRIBUTING.md` first.
+
+---
+
+## Quick start (every machine, CPU only)
+
+The whole simulation and the full model sweep need **nothing but Python**. No GPU, no Linux, no root. This is deliberate: the core result is machine-independent so all three of you can work in parallel.
+
+```bash
+# 1. Clone
+git clone <REPO_URL>
+cd racing-the-scanner
+
+# 2. Create an environment (Python 3.11+)
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+
+# 3. Copy the env template
+cp .env.example .env             # Windows: copy .env.example .env
+
+# 4. Smoke test: run one quick simulation
+make sim                         # or: python -m sim.run_experiment --policies baseline --runs 3 --smoke
+
+# 5. Run the tests
+make test
+```
+
+If `make sim` prints a short results table and `make test` passes, your environment is correct. You are ready to pick up your first issue.
+
+The **full sweep** (all schedulers vs the attack) is:
+
+```bash
+python -m sim.run_experiment --policies all --runs 20
+python analysis/make_graphs.py          # writes G1-G6 into figures/
+```
+
+---
+
+## Which machine does what
+
+Hardware differs a lot across the team, so roles are assigned to avoid idle machines and avoid overloading the small ones. Full detail in `docs/hardware-roles.md`; the short version:
+
+| Machine | Role |
+|---------|------|
+| Ibad's RTX 5070 Ti (32 GB) | Heaviest: neural policies (autoencoder, LSTM, 1D-CNN), local-LLM triage, large sweep runs. |
+| GTX 1660 Super PC (16 GB) | Moderate GPU: secondary neural/LLM work, parallel sweep shards. |
+| MacBook Pro M1 Pro | Development and compilation, the Python sim, and the Linux VM for memory/kernel testing. |
+| Khan's laptop (16 GB) | Lightweight: the CPU model sweep (sklearn is fine here), docs, reviews, PM. |
+| Ibad's laptop | Lightweight: benign-workload runs, docs, testing, issue triage. |
+
+The systems pieces (C payloads, the scanner, Tracee, any real `scx` work) need **Linux kernel 6.12 or newer**. Use a VM or a dedicated box. See `docs/setup/linux-wsl.md`. The GPU/LLM pieces want the NVIDIA machines. The Python simulation runs anywhere, which is why it is the backbone.
+
+---
+
+## Working together
+
+- Branch per issue: `feat/<area>-<short>`, e.g. `feat/sim-isolation-forest`. Never commit to `main`.
+- Open a pull request, link the issue, get one review, let CI pass, then merge.
+- Full conventions, including who owns which files to avoid collisions, are in `CONTRIBUTING.md`.
+- The task board is GitHub Issues + Projects. Milestones are in `ROADMAP.md`.
+
+---
+
+## Status
+
+Early scaffold. The simulation harness runs and is tested; the policy registry lists all ~15 schedulers with a few implemented and the rest stubbed as clearly-marked issues. Memory and detection modules are structured stubs with interfaces. Start from the open issues.

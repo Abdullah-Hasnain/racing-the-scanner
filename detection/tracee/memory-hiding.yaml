@@ -1,0 +1,20 @@
+# D2: a custom Aqua Tracee policy that watches the syscalls the hiding payloads
+# use. Load alongside Tracee's default signatures and compare what each catches.
+#
+#   tracee --policy detection/tracee/memory-hiding.yaml --output json
+#
+# This is a starting point. The first detection issue is to tune the scope
+# (which of these fire on benign JIT/GC) and to add the mprotect flag-transition
+# filters that separate PROT_NONE<->RW (hiding) from RW<->RX (JIT).
+apiVersion: tracee.aquasec.com/v1beta1
+kind: Policy
+metadata:
+  name: rts-memory-hiding
+spec:
+  scope:
+    - global
+  rules:
+    - event: mprotect       # V2 locking/unlocking, also JIT (benign) -> false alarms to study
+    - event: madvise        # V3 MADV_DONTNEED, also GC (benign)
+    - event: userfaultfd    # V3 fault-driven refill (rare in benign apps)
+    - event: memfd_secret   # V4 hard bypass (the RAM scanner cannot see this)

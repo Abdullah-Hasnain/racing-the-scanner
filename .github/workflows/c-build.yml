@@ -1,0 +1,18 @@
+name: c-build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax-check all payloads
+        run: make -C memory check
+      - name: Build v1 (the one guaranteed to link on any kernel)
+        run: gcc -O2 -Wall -o /tmp/v1 memory/v1_baseline.c
+      # V2-V4 depend on kernel features that the CI runner may lack at runtime,
+      # so we syntax-check them (above) but do not require them to run here.

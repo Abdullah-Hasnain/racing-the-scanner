@@ -1,0 +1,12 @@
+# Default simulation parameters, for reference and for analysis scripts.
+# The CLI (sim/run_experiment.py) accepts overrides; these document the defaults.
+
+n_benign: 4            # number of ordinary background apps
+ticks: 600             # simulated time steps per run
+scan_cost: 1.0         # CPU units the monitor must accumulate to complete one scan
+exposure_window: 8     # a scan catches the payload only if its latency <= this
+floor_share: 0.20      # invariant: guaranteed minimum CPU share for the monitor
+mimicry: true          # attacker imitates benign timing (set false for the naive hog)
+train_samples: 300     # observation windows per process used to train detectors
+seed: 42
+runs: 20               # repeats per policy (report median + spread)

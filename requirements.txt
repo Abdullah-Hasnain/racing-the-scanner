@@ -1,0 +1,14 @@
+# Core dependencies. Runs on every machine, CPU-only, no GPU needed.
+# The whole scheduler simulation and the 15-model sweep use only these.
+numpy>=1.26
+pandas>=2.1
+scikit-learn>=1.4
+scipy>=1.11
+pyyaml>=6.0
+matplotlib>=3.8
+tqdm>=4.66
+requests>=2.31
+
+# Dev tooling (lint + test). Also installed in CI.
+ruff>=0.5
+pytest>=8.0
