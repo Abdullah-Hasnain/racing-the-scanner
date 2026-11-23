@@ -113,8 +113,9 @@ process can be.
   locks onto one training app and roughly doubles FP (7% at n=1, 18-20% at n=2,
   73% at the old n=3 full). The mimic gets the highest likelihood there is.
 - `autoencoder` (optional, needs torch): reconstruction error of a
-  6-8-3-8-6 network, 60 epochs, seeded. 27% FP; training longer memorizes the
-  training apps. The mimic reconstructs like any benign app.
+  6-8-4-8-6 network, 60 epochs, seeded. 24% FP (27% at the original latent 3);
+  training longer memorizes the training apps. The mimic reconstructs like any
+  benign app.
 
 **Supervised classifiers** (trained on {normal, naive hog, monitor}). Across
 their grids, all seven reach about 100% on held-out monitor and naive-hog

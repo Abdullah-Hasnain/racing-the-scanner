@@ -32,7 +32,7 @@ class TorchAutoencoderOutlier:
         contamination: float = 0.01,
         lr: float = 1e-2,
         hidden: int = 8,
-        latent: int = 3,
+        latent: int = 4,
     ):
         self.epochs = epochs
         self.contam = contamination
