@@ -17,6 +17,7 @@ import time
 from dataclasses import dataclass, field
 
 import numpy as np
+from threadpoolctl import threadpool_limits
 
 from sim.policies import build_policy
 from sim.policies.base import Policy
@@ -111,6 +112,14 @@ def _allocate(shares: np.ndarray, enforces_floor: bool, floor: float) -> np.ndar
 
 
 def run_once(policy: Policy, cfg: SimConfig) -> SimResult:
+    # One BLAS/OpenMP thread: a scheduling decision runs on one core, and OpenMP
+    # models (histgb) otherwise spend most of each 6-row predict waking threads,
+    # which would inflate overhead_ms with thread-spawn cost instead of model cost.
+    with threadpool_limits(limits=1):
+        return _run_once(policy, cfg)
+
+
+def _run_once(policy: Policy, cfg: SimConfig) -> SimResult:
     rng = np.random.default_rng(cfg.seed)
     legit_X, sup_X, sup_y = _build_training(cfg, rng)
 
