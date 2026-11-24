@@ -48,12 +48,14 @@ ROADMAP for the stretch path.
 | S0 | baseline | stock EEVDF (control) |
 | S2 | iforest, ocsvm, lof, elliptic, knn, hbos, gmm, autoencoder | unsupervised anomaly |
 | S2 | rf, histgb, logreg, svm_rbf, mlp, knn_clf, naive_bayes | supervised classifier |
+| S4 | sched_fifo, cgroup_cpumax, cgroup_weight, sched_deadline | standard Linux reservation (detection-free) |
 | S3 | invariant | hard CPU-reservation floor |
 
 All ML policies share one harness: same features in, a priority multiplier out.
 That is why 15 of them is a model sweep, not 15 projects. Expected result: under
 mimicry the ML policies are evaded (they cannot tell the disguised hog apart from
-a benign app), while the invariant holds.
+a benign app), while the invariant holds. The reservation group answers "why not
+just use real-time priority or cgroups?" (see "Standard reservation baselines").
 
 ### The 15 ML policies: calibration and behavior
 
@@ -289,3 +291,64 @@ single runs dip below that: `lof` in 4 of 20 runs (down to 0.85), and `hbos` and
 `knn` in one run each (0.78, 0.98). In those runs false positives happened to
 demote the mimic on some ticks. That is false-positive noise, not detection; see
 the demotion rates under "Unsupervised anomaly detectors" above.
+
+### Standard reservation baselines (#9)
+
+The reservation group (`sim/policies/reservation.py`) models the standard Linux
+CPU-reservation mechanisms, so the comparison answers "why not just use
+real-time priority or cgroups?". They are detection-free: they protect the
+known monitor, or bound everyone else, without classifying any process. Every
+multiplier is 1 and there is no score, so mimicry cannot affect them: naive and
+mimicry runs are identical, and their AUC is n/a. They act through
+`Policy.allocate`, which rewrites the proportional shares each tick. The
+invariant's floor moved to that hook too, with its arithmetic unchanged.
+
+All four are fluid models, and they rely on the monitor being always runnable
+(it scans back to back):
+
+| policy | mechanism | sim model |
+|---|---|---|
+| `sched_fifo` | SCHED_FIFO real-time priority for the monitor | The monitor takes `rt_limit` = 95% first. The kernel keeps about 5% of each second for normal tasks (RT throttling, or the fair-server reservation on newer kernels). Normal tasks, the hog included, share the rest by weight. |
+| `cgroup_cpumax` | cgroup v2 `cpu.max`, the same cap on every non-monitor process | Each non-monitor process may use at most `cpumax_cap` = 20%: an equal fifth of the CPU for the five tenants (four apps and the attacker). The CPU is shared by weight; a process over its cap is held at it, and the excess goes to the others. |
+| `cgroup_weight` | cgroup v2 `cpu.weight`: the monitor in its own cgroup, everyone else in a sibling | Weights 25:100 give the monitor exactly 20% (`floor_share`); the rest split by weight inside the other group. |
+| `sched_deadline` | SCHED_DEADLINE, runtime/period = 0.2 | The same 20:80 split as `cgroup_weight`. The row is kept for completeness and is identical to it. |
+
+`cgroup_cpumax` caps everyone equally on purpose. Capping only the attacker
+would need an oracle that knows which process it is. At this cap it would also
+give the same allocation, because no benign app reaches 20%, so no oracle
+variant is included.
+
+**Results, coupled attack** (20 runs, median; naive and mimicry are identical):
+
+| policy | p95 latency | miss rate | monitor share | benign share |
+|---|---|---|---|---|
+| `sched_fifo` | 1.6 (a scan every 1-2 ticks) | 0 | 95% | 0.6% |
+| `cgroup_weight`, `sched_deadline`, `invariant` | 5 | 0 | 20% | 9.4% |
+| `cgroup_cpumax` | 7 | 0 | 16% | 64% |
+| `baseline` (for reference) | 35 | 1.0 | 2.9% | 11.4% |
+
+`benign_share` is the combined CPU share of all benign apps (mean over ticks),
+reported for every policy. It shows each mechanism's cost:
+- **`sched_fifo` has the lowest monitor latency of any policy, and it nearly
+  starves the system.** The benign apps get 0.6% of the CPU, because the hog
+  takes most of the 5% that real-time priority leaves over. That is why a busy
+  scanner does not run as SCHED_FIFO in production.
+- **The invariant is a standard reservation, not a new primitive.** A 25:100
+  `cpu.weight` split and a fluid 0.2 SCHED_DEADLINE budget are numerically
+  identical to it in every condition and mode (asserted in
+  `sim/tests/test_reservation.py`). This holds because the monitor is always
+  runnable and its proportional share never exceeds 20% under a policy that
+  judges no one. These 20% reservations protect only the monitor: the hog still
+  takes about 71% of the CPU, and the benign apps get 9.4%.
+- **`cpu.max` is coarser, and it depends on the cap.** The monitor is protected
+  only by what the caps leave over. At 20% per tenant it gets 16%, safe with one
+  tick to spare (p95 7 against the window of 8). A looser cap fails (coupled
+  mimicry, 20 runs, median):
+
+  | cap per process | 0.15 | 0.20 (default) | 0.25 | 0.30 | 0.35 | 0.40 | 0.50 |
+  |---|---|---|---|---|---|---|---|
+  | monitor p95 | 4 | 7 | 7 | 8 | 8 | 9 | 10 |
+  | miss rate | 0 | 0 | 0 | 0 | 0 | 0.32 | 1.00 |
+
+  It is also the only mechanism here that contains the hog: the benign apps keep
+  64% of the CPU.

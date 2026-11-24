@@ -31,7 +31,7 @@ import pandas as pd
 
 from sim.engine import CONDITIONS, SimConfig, run_policy
 from sim.metrics import aggregate
-from sim.policies import all_policies, expand
+from sim.policies import all_policies, augmented_policies, expand, reservation_names
 
 
 def _torch_available() -> bool:
@@ -152,13 +152,14 @@ def main() -> int:
         "auc_vs_legit": [_iqr(r, "roc_auc", ".2f") for _, r in agg.iterrows()],
         "auc_vs_benign": [_iqr(r, "roc_auc_benign", ".2f") for _, r in agg.iterrows()],
         "monitor_share": agg["monitor_share"],
+        "benign_share": agg["benign_share"],
         "overhead_ms": agg["overhead_ms"].round(1),
     })
     with pd.option_context("display.width", 160, "display.max_rows", None):
         print(table.to_string(index=False))
     print(f"\nwrote {out}/aggregate_{tag}.csv and per_run_{tag}.csv")
-    print(f"policies available: {len(all_policies())} "
-          f"(baseline + {len(all_policies()) - 2} augmented + invariant)")
+    print(f"policies available: {len(all_policies())} (baseline + {len(augmented_policies())} "
+          f"augmented + {len(reservation_names())} reservation + invariant)")
     return 0
 
 
