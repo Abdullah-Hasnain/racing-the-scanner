@@ -34,14 +34,17 @@ def _ev(pid, comm, name, **args):
 
 @pytest.fixture
 def log():
-    hide = {"prev_prot": "PROT_NONE", "prot": "PROT_READ|PROT_WRITE"}
+    # security_file_mprotect is the event with prev_prot; Tracee's parse-arguments
+    # renders a PROT_NONE region's prev_prot (vm_flags 0x70) as "".
+    lsm = "security_file_mprotect"
+    hide = {"prev_prot": "", "prot": "PROT_READ|PROT_WRITE"}
     jit = {"prev_prot": "PROT_READ|PROT_WRITE", "prot": "PROT_READ|PROT_EXEC"}
     return [
-        *[_ev(100, "v2", "mprotect", **hide) for _ in range(5)],
+        *[_ev(100, "v2", lsm, **hide) for _ in range(5)],
         _ev(101, "v3", "userfaultfd"),
-        *[_ev(200, "node", "mprotect", **jit) for _ in range(5)],
-        _ev(201, "python3", "mprotect", **jit),
-        _ev(300, "bash", "mprotect", **hide),  # unlabelled, must be ignored
+        *[_ev(200, "node", lsm, **jit) for _ in range(5)],
+        _ev(201, "python3", lsm, **jit),
+        _ev(300, "bash", lsm, **hide),  # unlabelled, must be ignored
     ]
 
 
