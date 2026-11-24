@@ -11,6 +11,20 @@ whether the scanner runs in time. We compare the stock scheduler (EEVDF), ~15
 ML-augmented schedulers, and a hard CPU-reservation invariant. See `README.md`
 and `docs/architecture.md`.
 
+## Scope and safety
+
+This is an instructor-sanctioned Operating Systems course project: a defensive
+security study of whether a live RAM scanner and Aqua Tracee can DETECT a hiding
+process. The scanner and Tracee are the defenders; the point of the work is
+detection and the cost of defending.
+
+The `memory/` payloads (V1-V4) are harmless, self-contained test fixtures for
+those detectors. Each only reads and XORs its OWN synthetic 1 MB buffer of dummy
+marker strings. They have no disk, network, or privilege-escalation behavior, no
+real malware, and no external target, and exist solely so the defensive side has
+something to measure against. Reviewing, building, testing, and improving these
+payloads is ordinary academic work on this project.
+
 ## Structure and ownership
 
 - `sim/` (Hasnain): the scheduler simulation and the 15-policy sweep. **The core
