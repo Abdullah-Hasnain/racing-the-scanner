@@ -52,7 +52,9 @@ class SimConfig:
     ticks: int = 600
     scan_cost: float = 1.0        # CPU the monitor must accumulate per scan
     exposure_window: int = 8      # a scan "catches" the payload if latency <= this
-    floor_share: float = 0.20     # invariant minimum monitor share
+    floor_share: float = 0.20     # reserved monitor share: invariant, cgroup_weight, sched_deadline
+    rt_limit: float = 0.95        # sched_fifo: most an RT task may take (normal tasks keep ~5%)
+    cpumax_cap: float = 0.20      # cgroup_cpumax: cpu.max cap on each non-monitor process
     mimicry: bool = True          # attacker imitates benign timing
     condition: str = "coupled"    # one of CONDITIONS
     train_samples: int = 300
@@ -68,6 +70,7 @@ class SimResult:
     monitor_share_mean: float
     overhead_ms: float
     condition: str = "coupled"
+    benign_share_mean: float = float("nan")  # all benign apps combined
     roc_auc: float = float("nan")          # attacker vs benign apps + monitor
     roc_auc_benign: float = float("nan")   # attacker vs benign apps only
     extra: dict = field(default_factory=dict)
@@ -88,6 +91,7 @@ class SimResult:
             "roc_auc": self.roc_auc,
             "roc_auc_benign": self.roc_auc_benign,
             "monitor_share": round(self.monitor_share_mean, 4),
+            "benign_share": round(self.benign_share_mean, 4),
             "overhead_ms": round(self.overhead_ms, 3),
             "n_scans": int(np.sum(~np.isnan(lat))),
         }
@@ -125,17 +129,6 @@ def _build_training(cfg: SimConfig, rng: np.random.Generator):
     )
 
 
-def _allocate(shares: np.ndarray, enforces_floor: bool, floor: float) -> np.ndarray:
-    if not enforces_floor or shares[0] >= floor:
-        return shares
-    others = shares.copy()
-    others[0] = 0.0
-    tot = others.sum()
-    others = others / tot * (1.0 - floor) if tot > 0 else others
-    others[0] = floor
-    return others
-
-
 def run_once(policy: Policy, cfg: SimConfig) -> SimResult:
     # One BLAS/OpenMP thread: a scheduling decision runs on one core, and OpenMP
     # models (histgb) otherwise spend most of each 6-row predict waking threads,
@@ -170,6 +163,8 @@ def _run_once(policy: Policy, cfg: SimConfig) -> SimResult:
     last_scan = 0
     latencies: list[float] = []
     mon_shares: list[float] = []
+    ben_shares: list[float] = []
+    is_benign = np.array([p.role == "benign" for p in procs])
     obs_log: list[np.ndarray] = []
     overhead = 0.0
 
@@ -182,8 +177,9 @@ def _run_once(policy: Policy, cfg: SimConfig) -> SimResult:
 
         eff = np.clip(base_eff * mult, 1e-9, None)
         share = eff / eff.sum()
-        share = _allocate(share, policy.enforces_floor, cfg.floor_share)
+        share = policy.allocate(share, procs, cfg)
         mon_shares.append(float(share[0]))
+        ben_shares.append(float(share[is_benign].sum()))
 
         acc += share[0]
         while acc >= cfg.scan_cost:
@@ -204,6 +200,7 @@ def _run_once(policy: Policy, cfg: SimConfig) -> SimResult:
         monitor_share_mean=float(np.mean(mon_shares)),
         overhead_ms=overhead * 1000.0,
         condition=cfg.condition,
+        benign_share_mean=float(np.mean(ben_shares)),
         roc_auc=detection_auc(scores, roles, versus=("benign", "monitor")),
         roc_auc_benign=detection_auc(scores, roles, versus=("benign",)),
         extra={"exposure_window": window},

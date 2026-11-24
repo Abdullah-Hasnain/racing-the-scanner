@@ -14,6 +14,7 @@ We study that race. An unprivileged attacker (1) hides its data with virtual-mem
 
 - **S0 Baseline:** stock Linux EEVDF (the control).
 - **S2 Augmented (ML):** a family of ~15 ML-augmented schedulers, swept through one shared harness.
+- **S4 Reservation:** the standard Linux mechanisms (`SCHED_FIFO`, cgroup `cpu.max`, cgroup `cpu.weight`, `SCHED_DEADLINE`), detection-free, to answer "why not just use real-time priority or cgroups?".
 - **S3 Invariant:** a hard CPU-reservation floor that guarantees the monitor its share regardless of any model.
 
 Separately, because normal apps (Node.js JIT, Go/Java GC, jemalloc) use the same memory syscalls as the attacker, we test whether pairing Aqua Tracee with a small local-LLM triage layer cuts false alarms.
@@ -26,7 +27,7 @@ Separately, because normal apps (Node.js JIT, Go/Java GC, jemalloc) use the same
 
 | Path | Owner | What's in it |
 |------|-------|--------------|
-| `sim/` | Hasnain (@Abdullah-Hasnain) | The scheduler simulation, the ~15 ML policies, the invariant, the mimicry attacker, metrics. **The core deliverable.** |
+| `sim/` | Hasnain (@Abdullah-Hasnain) | The scheduler simulation, the ~15 ML policies, the standard reservation baselines, the invariant, the mimicry attacker, metrics. **The core deliverable.** |
 | `memory/` | Khan (@khan-slayer) | The four hiding payloads (V1-V4) in C and the live RAM scanner. Linux only. |
 | `detection/` | Ibad (@vanodew1) | Aqua Tracee policies, the per-PID log aggregator, the local-LLM triage, benign workload runners. |
 | `analysis/` | shared | Builds graphs G1-G6 from `results/`. |

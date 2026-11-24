@@ -5,7 +5,9 @@ n_benign: 4            # number of ordinary background apps
 ticks: 600             # simulated time steps per run
 scan_cost: 1.0         # CPU units the monitor must accumulate to complete one scan
 exposure_window: 8     # a scan catches the payload only if its latency <= this
-floor_share: 0.20      # invariant: guaranteed minimum CPU share for the monitor
+floor_share: 0.20      # reserved monitor share: invariant, cgroup_weight, sched_deadline
+rt_limit: 0.95         # sched_fifo: most an RT task may take (normal tasks keep ~5%)
+cpumax_cap: 0.20       # cgroup_cpumax: cpu.max cap on each non-monitor process
 mimicry: true          # attacker imitates benign timing (set false for the naive hog)
 condition: coupled     # none | hiding | starvation | coupled (see sim/engine.py, G3)
 train_samples: 300     # observation windows per process used to train detectors
