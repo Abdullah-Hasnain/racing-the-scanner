@@ -1,8 +1,10 @@
 """The coupled attack on the real kernel (#15).
 
-V2 and CPU hogs (the attacker, at a claimed high priority) share one core with
-the live RAM scanner, under three CPU policies for the scanner. Each cell counts
-the scans completed and the scans that caught V2's marker. Setup, results and
+An attacker (V1 or V2, plus CPU hogs in the starving conditions, all at a
+claimed high priority) shares one core with the live RAM scanner, under three
+CPU policies for the scanner. The four conditions mirror the simulation's G3:
+none (V1, never hides), starvation (V1 + hogs), hiding (V2), coupled (V2 + hogs).
+Each cell counts the scans completed and the scans that caught the marker. Setup, results and
 caveats are in detection/README.md, "Coupled attack on the real kernel".
 
 Needs root (reading another process's memory under ptrace_scope=1, cgroups,
@@ -39,7 +41,19 @@ POLICIES = {
     "cgroup_weight": Policy(fifo=False, own_cgroup=True),
     "sched_fifo": Policy(fifo=True, own_cgroup=False),
 }
-CONDITIONS = {"hiding": 0, "coupled": 4}  # condition -> default number of hogs
+@dataclass(frozen=True)
+class Condition:
+    attacker: str  # "v1" never hides its marker, "v2" hides it between accesses
+    hogs: bool  # CPU hogs join the attacker
+
+
+CONDITIONS = {
+    "none": Condition("v1", hogs=False),
+    "starvation": Condition("v1", hogs=True),
+    "hiding": Condition("v2", hogs=False),
+    "coupled": Condition("v2", hogs=True),
+}
+ATTACKER_ARGS = {"v1": [], "v2": ["--duration", "0"]}  # both run until signalled
 CGROUP = Path("/sys/fs/cgroup/rts-coupled")
 MONITOR_WEIGHT, ATTACKER_WEIGHT = 10000, 100
 FIFO_PRIORITY = 10
@@ -110,22 +124,22 @@ def run_cell(args: argparse.Namespace, policy: str, condition: str) -> dict:
     """One run on one core. The scanner is already scanning when the attack
     starts: the hogs begin after its first scan, and only scans in the next
     `args.seconds` count, timed as their lines arrive."""
-    pol = POLICIES[policy]
+    pol, cond = POLICIES[policy], CONDITIONS[condition]
     monitor, attacker = _make_cgroups()
     procs: list[subprocess.Popen] = []
     try:
-        # V2 is the attacker too, so it gets the attacker's priority.
-        v2 = subprocess.Popen(
-            [args.v2_bin, "--duration", "0"],  # until SIGINT
+        # The hiding process is the attacker too, so it gets the attacker's priority.
+        target = subprocess.Popen(
+            [getattr(args, f"{cond.attacker}_bin"), *ATTACKER_ARGS[cond.attacker]],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             preexec_fn=_child_setup(args.cpu, nice=args.hog_nice),
         )
-        procs.append(v2)
-        _join(attacker, v2.pid)
+        procs.append(target)
+        _join(attacker, target.pid)
         time.sleep(1)  # let V2 lock its buffer before the first scan
         scanner = subprocess.Popen(
             [sys.executable, str(Path(args.repo) / "memory/scanner/scanner.py"),
-             "--pid", str(v2.pid), "--interval", str(args.interval),
+             "--pid", str(target.pid), "--interval", str(args.interval),
              "--duration", str(args.seconds + 5)],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             env={**os.environ, "PYTHONUNBUFFERED": "1"},
@@ -137,7 +151,7 @@ def run_cell(args: argparse.Namespace, policy: str, condition: str) -> dict:
         for line in lines:
             if _SCAN.match(line.strip()):
                 break
-        for _ in range(args.hogs if condition == "coupled" else 0):
+        for _ in range(args.hogs if cond.hogs else 0):
             hog = subprocess.Popen(
                 [sys.executable, "-c", HOG], preexec_fn=_child_setup(args.cpu, nice=args.hog_nice)
             )
@@ -153,16 +167,20 @@ def run_cell(args: argparse.Namespace, policy: str, condition: str) -> dict:
         for p in reversed(procs[1:]):  # scanner and hogs
             p.kill()
             p.wait()
-    v2.send_signal(signal.SIGINT)
-    v2_out, _ = v2.communicate()
+    target.send_signal(signal.SIGINT)  # V2 prints its fault count on SIGINT
+    try:
+        target_out, _ = target.communicate(timeout=3)
+    except subprocess.TimeoutExpired:  # V1 has no handler
+        target.kill()
+        target_out, _ = target.communicate()
     _remove_cgroups()
-    faults = _V2_FAULTS.search(v2_out or "")
+    faults = _V2_FAULTS.search(target_out or "")
     return {
-        "policy": policy, "condition": condition, "cpu": args.cpu,
+        "policy": policy, "condition": condition, "attacker": cond.attacker, "cpu": args.cpu,
         "hogs": len(procs) - 2, "attacker_nice": args.hog_nice,
         "seconds": args.seconds, "interval_s": args.interval,
         **asdict(summarize(window, args.seconds)),
-        "v2_faults": int(faults.group(1)) if faults else None,
+        "v2_faults": int(faults.group(1)) if faults else None,  # V2 only
     }
 
 
@@ -188,9 +206,10 @@ def _write(rows: list[dict], path: Path) -> None:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Coupled attack on the real kernel (#15)")
     ap.add_argument("--repo", default=".", help="repo root (pkexec starts in /root)")
+    ap.add_argument("--v1-bin", help="V1 binary (default: <repo>/memory/bin/v1)")
     ap.add_argument("--v2-bin", help="V2 binary (default: <repo>/memory/bin/v2)")
     ap.add_argument("--cpu", type=int, default=2, help="core to pin everything to")
-    ap.add_argument("--hogs", type=int, default=CONDITIONS["coupled"])
+    ap.add_argument("--hogs", type=int, default=4, help="hogs in starvation and coupled")
     ap.add_argument("--hog-nice", type=int, default=-20, help="the attacker's claimed priority")
     ap.add_argument("--seconds", type=float, default=20.0, help="counted scan window per cell")
     # 37 ms does not divide V2's 100 ms period, so scans sweep its whole cycle.
@@ -200,12 +219,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--conditions", nargs="+", default=list(CONDITIONS), choices=list(CONDITIONS))
     ap.add_argument("--out", help="CSV (default: <repo>/results/coupled_live.csv)")
     args = ap.parse_args(argv)
+    args.v1_bin = args.v1_bin or str(Path(args.repo) / "memory/bin/v1")
     args.v2_bin = args.v2_bin or str(Path(args.repo) / "memory/bin/v2")
     if os.geteuid() != 0:
         sys.exit(f"needs root; run: pkexec {sys.executable} {Path(__file__).resolve()} "
                  f"--repo {Path(args.repo).resolve()}")
-    if not Path(args.v2_bin).exists():
-        sys.exit(f"no V2 binary at {args.v2_bin}; run `make -C memory` first")
+    for b in {CONDITIONS[c].attacker for c in args.conditions}:
+        if not Path(getattr(args, f"{b}_bin")).exists():
+            sys.exit(f"no {b.upper()} binary at {getattr(args, f'{b}_bin')}; run `make -C memory` first")
 
     rows = []
     run_id = time.strftime("%Y%m%d-%H%M%S")
