@@ -104,8 +104,6 @@ def syscall_event(pid: int, name: str, **args) -> str:
 
 
 def test_segv_handler_installs_and_signal_returns_are_counted():
-    # Tracee has no SIGSEGV-delivery event. A hider shows up as a process that
-    # installs a SIGSEGV handler and then returns from many signal handlers.
     lines = [
         syscall_event(7, "rt_sigaction", signum=11, act="0x7ffd0000", oldact="0x0"),
         syscall_event(7, "rt_sigaction", signum=14, act="0x7ffd0000", oldact="0x0"),  # SIGALRM

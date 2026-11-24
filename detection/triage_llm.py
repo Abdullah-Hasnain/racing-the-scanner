@@ -45,7 +45,7 @@ SYSTEM = (
     "(Go, Java) install one too, so on its own it proves nothing.\n"
     "- n_rt_sigreturn: signal handlers returned from. A hider that unlocks pages "
     "from a SIGSEGV handler returns from one per page it touches.\n"
-    "- threads, tracee_alerts: thread count and Tracee signature alerts.\n"
+    "- tracee_alerts: Tracee signature alerts that fired for the process.\n"
     "Answer with a JSON object: {\"verdict\": \"benign|suspicious\", \"reason\": \"...\"}."
 )
 

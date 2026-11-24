@@ -67,7 +67,7 @@ included. The stub's process name is `python`, not `python3`.
 
 ## Signal features
 
-Tracee v0.24.1 has no event for a SIGSEGV being delivered. V2 shows up instead
+Tracee (v0.23.2 and v0.24.1) has no event for a SIGSEGV being delivered. V2 shows up instead
 through two syscalls the policy watches:
 
 | feature | event | meaning |

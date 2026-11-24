@@ -83,7 +83,6 @@ class ProcessFeatures:
     syscalls: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     flips: dict[Flip, int] = field(default_factory=lambda: defaultdict(int))
     segv_handlers: int = 0  # rt_sigaction calls that install a SIGSEGV handler
-    threads: int = 0
     alerts: int = 0
 
     def as_features(self) -> dict:
@@ -93,7 +92,6 @@ class ProcessFeatures:
             **{f"n_{k}": self.syscalls.get(k, 0) for k in WATCHED},
             **{f.value: self.flips.get(f, 0) for f in Flip},
             "segv_handlers": self.segv_handlers,
-            "threads": self.threads,
             "tracee_alerts": self.alerts,
         }
 
@@ -101,12 +99,12 @@ class ProcessFeatures:
 def _installs_segv_handler(event: dict) -> bool:
     """True when an rt_sigaction call sets (not just queries) the SIGSEGV handler.
 
-    Tracee has no event for a SIGSEGV being delivered. A V2-style hider shows up
-    instead as a process that installs a SIGSEGV handler, then returns from many
-    signal handlers (n_rt_sigreturn).
+    Tracee has no SIGSEGV-delivery event; see "Signal features" in README.md.
+    Tracee prints signum as an int and pointers as hex strings ("0x0" is null).
     """
     args = {a.get("name"): a.get("value") for a in event.get("args", [])}
-    return args.get("signum") == SIGSEGV and args.get("act") not in (None, 0, "0", "0x0")
+    act = args.get("act") or 0
+    return args.get("signum") == SIGSEGV and (int(act, 16) if isinstance(act, str) else act) != 0
 
 
 def aggregate(lines) -> dict[int, ProcessFeatures]:
