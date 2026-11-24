@@ -246,3 +246,39 @@ def test_live_stops_root_tracee_through_sudo_and_every_workload_process(tmp_path
     assert any(c.startswith("-n kill -INT") for c in sudo_calls), "root Tracee needs sudo to stop"
     assert stopped.read_text().strip() == "INT", "Tracee must get SIGINT so it flushes"
     assert _gone(int(grandchild.read_text())), "the attacker's child outlived the run"
+
+
+def test_benign_only_run_scores_false_alarms(log, tmp_path, monkeypatch):
+    # #13's false-alarm runs have no attacker; catch rate is then blank.
+    monkeypatch.setenv("RTS_RESULTS_DIR", str(tmp_path / "res"))
+    p = tmp_path / "saved.json"
+    p.write_text("\n".join(log))
+    assert harness.main(["--tracee-log", str(p), "--benign-comm", "node", "--no-llm"]) == 0
+    row = next(csv.DictReader((tmp_path / "res" / "detection_g5.csv").open()))
+    assert (row["n_attackers"], row["catch_rate"], row["n_benign"]) == ("0", "", "1")
+
+
+def test_empty_comm_prefix_matches_nothing(log):
+    # `--benign-comm ""` must not label every process on the host as benign.
+    sc, _ = harness.run_offline(log, True, attacker_comm=["v2"], benign_comm=[""])
+    assert sc.n_benign == 0
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="as root the harness does not go through sudo")
+def test_live_warns_when_a_workload_fails(tmp_path, monkeypatch, capsys):
+    # A missing runtime makes run_benign.py exit 1 at once; say so, don't log n_benign=0 quietly.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _script(bin_dir / "sudo", 'while [ "${1#-}" != "$1" ]; do shift; done\n[ $# -eq 0 ] || exec "$@"\n')
+    tracee = _script(tmp_path / "tracee", "trap 'exit 0' INT\nwhile :; do sleep 0.05; done\n")
+    attacker = _script(tmp_path / "attacker", "exit 3\n")
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("RTS_RESULTS_DIR", str(tmp_path / "res"))
+    args = harness.build_parser().parse_args([
+        "--live", "--attacker-comm", "attacker", "--attacker-bin", str(attacker),
+        "--tracee-bin", str(tracee), "--seconds", "1", "--tracee-warmup", "0.3",
+    ])
+
+    harness.run_live(args, "t")
+
+    assert f"{attacker} exited with code 3" in capsys.readouterr().err
