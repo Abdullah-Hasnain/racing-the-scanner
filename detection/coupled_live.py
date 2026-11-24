@@ -1,25 +1,12 @@
 """The coupled attack on the real kernel (#15).
 
-The simulation shows that under a coupled attack (hide and hog the CPU) a CPU
-reservation keeps the monitor scheduled where detection-based scheduling fails.
-This runs the reservation half of that claim on real Linux: V2 hides, CPU hogs
-compete for the same core, and the live RAM scanner scans V2 under three CPU
-policies:
+V2 and CPU hogs (the attacker, at a claimed high priority) share one core with
+the live RAM scanner, under three CPU policies for the scanner. Each cell counts
+the scans completed and the scans that caught V2's marker. Setup, results and
+caveats are in detection/README.md, "Coupled attack on the real kernel".
 
-- eevdf: the stock scheduler, every process at equal weight
-- cgroup_weight: the scanner alone in a cgroup with cpu.weight 10000, the rest 100
-- sched_fifo: the scanner at SCHED_FIFO priority 10
-
-Everything is pinned to one core so the hogs really compete, and the hogs claim
-a high priority (nice -20 by default), as the simulation's attacker does. At
-equal nice the scanner (well under 1% of a core) is never starved: EEVDF already
-gives a light, mostly sleeping task its share. Each cell records
-how many scans the scanner completed, how many caught V2's marker, and V2's own
-fault count (the hogs slow V2 too). The ML policies exist only in the simulation,
-so they are not part of this run.
-
-Needs root: reading another process's memory under ptrace_scope=1, creating
-cgroups, and SCHED_FIFO. From the repo root:
+Needs root (reading another process's memory under ptrace_scope=1, cgroups,
+SCHED_FIFO). From the repo root:
 
   pkexec "$PWD/.venv/bin/python" "$PWD/detection/coupled_live.py" --repo "$PWD"
 """
@@ -28,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import math
 import os
 import re
 import signal
@@ -39,15 +25,28 @@ from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-POLICIES = ("eevdf", "cgroup_weight", "sched_fifo")
-CONDITIONS = ("hiding", "coupled")
+import numpy as np
+
+
+@dataclass(frozen=True)
+class Policy:
+    fifo: bool  # the scanner runs at SCHED_FIFO
+    own_cgroup: bool  # the scanner sits alone in a heavily weighted cgroup
+
+
+POLICIES = {
+    "eevdf": Policy(fifo=False, own_cgroup=False),  # stock scheduler, no reservation
+    "cgroup_weight": Policy(fifo=False, own_cgroup=True),
+    "sched_fifo": Policy(fifo=True, own_cgroup=False),
+}
+CONDITIONS = {"hiding": 0, "coupled": 4}  # condition -> default number of hogs
 CGROUP = Path("/sys/fs/cgroup/rts-coupled")
-MONITOR_WEIGHT, OTHERS_WEIGHT = 10000, 100
+MONITOR_WEIGHT, ATTACKER_WEIGHT = 10000, 100
 FIFO_PRIORITY = 10
 HOG = "while True: pass"
 
 _SCAN = re.compile(r"^scan\s+\d+\s+found=(\d)\s+scan_ms=\s*([\d.]+)")
-_V2_DONE = re.compile(r"faults=(\d+)")
+_V2_FAULTS = re.compile(r"faults=(\d+)")
 
 
 @dataclass(frozen=True)
@@ -59,29 +58,25 @@ class ScanSummary:
     p95_scan_ms: float | None
 
 
-def _rank(sorted_ms: list[float], q: float) -> float:
-    """Nearest-rank percentile."""
-    return sorted_ms[max(0, math.ceil(q * len(sorted_ms)) - 1)]
-
-
 def summarize(lines: Iterable[str], seconds: float) -> ScanSummary:
-    """Reduce the scanner's per-scan lines to counts and scan-time percentiles."""
+    """Reduce the scanner's per-scan lines to counts and scan-time percentiles
+    (linear interpolation, as sim/engine.py reports latency)."""
     found, ms = [], []
     for line in lines:
         if m := _SCAN.match(line.strip()):
             found.append(m.group(1) == "1")
             ms.append(float(m.group(2)))
-    ms.sort()
     return ScanSummary(
         scans=len(found),
         catches=sum(found),
         scans_per_s=len(found) / seconds,
-        p50_scan_ms=_rank(ms, 0.5) if ms else None,
-        p95_scan_ms=_rank(ms, 0.95) if ms else None,
+        p50_scan_ms=float(np.percentile(ms, 50)) if ms else None,
+        p95_scan_ms=float(np.percentile(ms, 95)) if ms else None,
     )
 
 
-def _pin(cpu: int, fifo: bool, nice: int = 0):
+def _child_setup(cpu: int, nice: int = 0, fifo: bool = False):
+    """Pin a child to one core and give it a nice value or SCHED_FIFO."""
     def setup() -> None:
         os.sched_setaffinity(0, {cpu})
         if nice:
@@ -91,14 +86,20 @@ def _pin(cpu: int, fifo: bool, nice: int = 0):
     return setup
 
 
-def _cgroups() -> tuple[Path, Path]:
-    monitor, others = CGROUP / "monitor", CGROUP / "others"
-    for d in (CGROUP, monitor, others):
+def _make_cgroups() -> tuple[Path, Path]:
+    monitor, attacker = CGROUP / "monitor", CGROUP / "attacker"
+    for d in (CGROUP, monitor, attacker):
         d.mkdir(exist_ok=True)
     (CGROUP / "cgroup.subtree_control").write_text("+cpu")
     (monitor / "cpu.weight").write_text(str(MONITOR_WEIGHT))
-    (others / "cpu.weight").write_text(str(OTHERS_WEIGHT))
-    return monitor, others
+    (attacker / "cpu.weight").write_text(str(ATTACKER_WEIGHT))
+    return monitor, attacker
+
+
+def _remove_cgroups() -> None:
+    for d in (CGROUP / "monitor", CGROUP / "attacker", CGROUP):
+        if d.exists():
+            d.rmdir()
 
 
 def _join(cgroup: Path, pid: int) -> None:
@@ -107,57 +108,74 @@ def _join(cgroup: Path, pid: int) -> None:
 
 def run_cell(args: argparse.Namespace, policy: str, condition: str) -> dict:
     """One run on one core. The scanner is already scanning when the attack
-    starts: the hogs (coupled only) begin after its first scan, and only scans
-    from then on count."""
-    monitor, others = _cgroups()
-    v2 = subprocess.Popen(
-        [args.v2_bin, "--duration", "0"],  # until SIGINT
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        preexec_fn=_pin(args.cpu, False),
-    )
-    _join(others, v2.pid)
-    time.sleep(1)  # let V2 lock its buffer before the first scan
-    scanner = subprocess.Popen(
-        [sys.executable, str(Path(args.repo) / "memory/scanner/scanner.py"), "--pid", str(v2.pid),
-         "--interval", str(args.interval), "--duration", str(args.seconds + 1)],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        env={**os.environ, "PYTHONUNBUFFERED": "1"},
-        preexec_fn=_pin(args.cpu, fifo=policy == "sched_fifo"),
-    )
-    _join(monitor if policy == "cgroup_weight" else others, scanner.pid)
-    lines = iter(scanner.stdout.readline, "")
-    for line in lines:
-        if _SCAN.match(line.strip()):
-            break
-    hogs = [
-        subprocess.Popen([sys.executable, "-c", HOG], preexec_fn=_pin(args.cpu, False, args.hog_nice))
-        for _ in range(args.hogs if condition == "coupled" else 0)
-    ]
-    for h in hogs:
-        _join(others, h.pid)
-    t0 = time.monotonic()
-    after = list(lines)
-    scanner.wait()
-    elapsed = time.monotonic() - t0
-    for h in hogs:
-        h.kill()
-        h.wait()
+    starts: the hogs begin after its first scan, and only scans in the next
+    `args.seconds` count, timed as their lines arrive."""
+    pol = POLICIES[policy]
+    monitor, attacker = _make_cgroups()
+    procs: list[subprocess.Popen] = []
+    try:
+        # V2 is the attacker too, so it gets the attacker's priority.
+        v2 = subprocess.Popen(
+            [args.v2_bin, "--duration", "0"],  # until SIGINT
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            preexec_fn=_child_setup(args.cpu, nice=args.hog_nice),
+        )
+        procs.append(v2)
+        _join(attacker, v2.pid)
+        time.sleep(1)  # let V2 lock its buffer before the first scan
+        scanner = subprocess.Popen(
+            [sys.executable, str(Path(args.repo) / "memory/scanner/scanner.py"),
+             "--pid", str(v2.pid), "--interval", str(args.interval),
+             "--duration", str(args.seconds + 5)],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            preexec_fn=_child_setup(args.cpu, fifo=pol.fifo),
+        )
+        procs.append(scanner)
+        _join(monitor if pol.own_cgroup else attacker, scanner.pid)
+        lines = iter(scanner.stdout.readline, "")
+        for line in lines:
+            if _SCAN.match(line.strip()):
+                break
+        for _ in range(args.hogs if condition == "coupled" else 0):
+            hog = subprocess.Popen(
+                [sys.executable, "-c", HOG], preexec_fn=_child_setup(args.cpu, nice=args.hog_nice)
+            )
+            procs.append(hog)
+            _join(attacker, hog.pid)
+        t_end = time.monotonic() + args.seconds
+        window = []
+        for line in lines:
+            if time.monotonic() > t_end:
+                break
+            window.append(line)
+    finally:
+        for p in reversed(procs[1:]):  # scanner and hogs
+            p.kill()
+            p.wait()
     v2.send_signal(signal.SIGINT)
     v2_out, _ = v2.communicate()
-    faults = _V2_DONE.search(v2_out or "")
+    _remove_cgroups()
+    faults = _V2_FAULTS.search(v2_out or "")
     return {
-        "policy": policy, "condition": condition, "hogs": len(hogs), "hog_nice": args.hog_nice,
-        "seconds": round(elapsed, 2), "interval_s": args.interval,
-        **asdict(summarize(after, elapsed)),
+        "policy": policy, "condition": condition, "cpu": args.cpu,
+        "hogs": len(procs) - 2, "attacker_nice": args.hog_nice,
+        "seconds": args.seconds, "interval_s": args.interval,
+        **asdict(summarize(window, args.seconds)),
         "v2_faults": int(faults.group(1)) if faults else None,
     }
 
 
 def _write(rows: list[dict], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    fields = list(rows[0])
+    if path.exists():
+        with path.open() as f:
+            if next(csv.reader(f), None) != fields:
+                sys.exit(f"{path} has different columns; pass a new --out")
     new = not path.exists()
     with path.open("a", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(rows[0]))
+        w = csv.DictWriter(f, fieldnames=fields)
         if new:
             w.writeheader()
         w.writerows(rows)
@@ -171,14 +189,15 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Coupled attack on the real kernel (#15)")
     ap.add_argument("--repo", default=".", help="repo root (pkexec starts in /root)")
     ap.add_argument("--v2-bin", help="V2 binary (default: <repo>/memory/bin/v2)")
-    ap.add_argument("--cpu", type=int, default=os.cpu_count() - 1, help="core to pin to")
-    ap.add_argument("--hogs", type=int, default=4)
-    ap.add_argument("--hog-nice", type=int, default=-20, help="the hogs' claimed priority")
-    ap.add_argument("--seconds", type=float, default=20.0, help="scanner run per cell")
-    ap.add_argument("--interval", type=float, default=0.05, help="scanner sleep between scans")
+    ap.add_argument("--cpu", type=int, default=2, help="core to pin everything to")
+    ap.add_argument("--hogs", type=int, default=CONDITIONS["coupled"])
+    ap.add_argument("--hog-nice", type=int, default=-20, help="the attacker's claimed priority")
+    ap.add_argument("--seconds", type=float, default=20.0, help="counted scan window per cell")
+    # 37 ms does not divide V2's 100 ms period, so scans sweep its whole cycle.
+    ap.add_argument("--interval", type=float, default=0.037, help="scanner sleep between scans")
     ap.add_argument("--reps", type=int, default=3)
-    ap.add_argument("--policies", nargs="+", default=list(POLICIES), choices=POLICIES)
-    ap.add_argument("--conditions", nargs="+", default=list(CONDITIONS), choices=CONDITIONS)
+    ap.add_argument("--policies", nargs="+", default=list(POLICIES), choices=list(POLICIES))
+    ap.add_argument("--conditions", nargs="+", default=list(CONDITIONS), choices=list(CONDITIONS))
     ap.add_argument("--out", help="CSV (default: <repo>/results/coupled_live.csv)")
     args = ap.parse_args(argv)
     args.v2_bin = args.v2_bin or str(Path(args.repo) / "memory/bin/v2")
@@ -190,15 +209,17 @@ def main(argv: list[str] | None = None) -> int:
 
     rows = []
     run_id = time.strftime("%Y%m%d-%H%M%S")
-    for rep in range(args.reps):
-        for condition in args.conditions:
-            for policy in args.policies:
-                row = {"run_id": run_id, "rep": rep, **run_cell(args, policy, condition)}
-                print(row, flush=True)
-                rows.append(row)
-    _write(rows, Path(args.out or Path(args.repo) / "results/coupled_live.csv"))
-    for d in (CGROUP / "monitor", CGROUP / "others", CGROUP):
-        d.rmdir()
+    try:
+        for rep in range(args.reps):
+            for condition in args.conditions:
+                for policy in args.policies:
+                    row = {"run_id": run_id, "rep": rep, **run_cell(args, policy, condition)}
+                    print(row, flush=True)
+                    rows.append(row)
+    finally:
+        _remove_cgroups()
+        if rows:
+            _write(rows, Path(args.out or Path(args.repo) / "results/coupled_live.csv"))
     return 0
 
 

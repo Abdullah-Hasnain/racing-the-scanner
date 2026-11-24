@@ -96,36 +96,45 @@ sudo ~/tracee/dist/tracee --policy detection/tracee/memory-hiding.yaml \
 ## Coupled attack on the real kernel
 
 `coupled_live.py` runs the reservation half of the simulation's claim on real
-Linux (#15). V2 hides, the live RAM scanner scans it, and in the `coupled`
-condition 4 CPU hogs at nice -20 (the attacker claiming high priority, as in the
-simulation) compete for the same core. The hogs start after the scanner's first
-scan, since a monitor is already running when an attack begins. Policies:
-`eevdf` (stock, equal weights), `cgroup_weight` (the scanner alone in a cgroup
-with cpu.weight 10000 vs 100) and `sched_fifo` (the scanner at SCHED_FIFO 10).
+Linux (#15). V2 hides and the live RAM scanner scans it, all pinned to one core.
+In the `coupled` condition 4 CPU hogs join them. The attacker (V2 and the hogs)
+claims nice -20, as the simulation's attacker claims a high priority. The hogs
+start after the scanner's first scan, since a monitor is already running when an
+attack begins, and only the scans in the next 20 s count. Policies for the
+scanner: `eevdf` (stock, no reservation), `cgroup_weight` (alone in a cgroup
+with cpu.weight 10000 vs the attacker's 100) and `sched_fifo` (SCHED_FIFO 10).
 The ML policies exist only in the simulation. It needs root:
 
 ```bash
 pkexec "$PWD/.venv/bin/python" "$PWD/detection/coupled_live.py" --repo "$PWD"
 ```
 
-Kernel 7.0.0-44, Intel Core i7-14700F (bare metal), 3 reps of 20 s per cell, scanner sleeping 50 ms
-between scans, V2 at its defaults (10 ms dwell, 100 ms interval):
+Kernel 7.0.0-44, Intel Core i7-14700F (bare metal), pinned to CPU 2 (a P-core),
+3 reps of 20 s per cell. The scanner sleeps 37 ms between scans, which does not
+divide V2's 100 ms period, so scans sample its whole cycle. V2 is at its
+defaults (10 ms exposed per 100 ms).
 
 | condition | policy | scans/s | scans that caught V2 |
 |---|---|---|---|
-| hiding | eevdf, cgroup_weight, sched_fifo | 19.7 to 19.8 | 47 to 54 |
-| coupled | eevdf | 5.8 to 6.9 | 17 to 21 |
-| coupled | cgroup_weight | 20.0 | 50 to 66 |
-| coupled | sched_fifo | 20.2 | 49 to 67 |
+| hiding | eevdf, cgroup_weight, sched_fifo | 26.8 | 52 to 56 |
+| coupled | eevdf | 9.9 to 11.7 | 30 to 41 |
+| coupled | cgroup_weight | 26.9 | 51 to 55 |
+| coupled | sched_fifo | 26.9 | 47 to 54 |
+| coupled, attacker at nice 0 | eevdf | 26.5 | 53 to 60 |
 
-Under stock EEVDF the coupled attack cuts the scanner's scans by about 70% and
-its catches by about 60%. Either reservation restores both, without judging any
-process. Scan time itself barely moves (p95 0.3 to 0.4 ms in every cell): the
-starvation shows up as the scanner waiting longer to run between scans.
-
-At equal nice the hogs do not starve the scanner at all (20 scans/s in a smoke
-run): it uses well under 1% of a core, and EEVDF already gives a light, mostly
-sleeping task that much. The attack needs the claimed priority.
+- Under stock EEVDF the coupled attack cuts the scanner's scans by about 60%
+  and its catches by about 30%. Either reservation keeps both at the no-attack
+  level, without judging any process.
+- Catches fall less than scans because, under EEVDF, the scans that do run
+  catch V2 more often (14 to 19% of scans, against 10% without hogs, which is
+  V2's exposed fraction). That is observed, not explained; sharing a core with
+  V2 may bunch the scanner's turns around V2's wakeups.
+- Scan time itself does not grow (p95 0.15 to 0.30 ms in every cell); the
+  starvation is the scanner waiting longer for its turn between scans.
+- At equal nice the hogs do not starve the scanner: it uses about 1% of a core,
+  and EEVDF already gives a light, mostly sleeping task that much. The attack
+  needs the claimed priority.
+- V2 made 210 to 213 faults in every cell, so the hogs did not slow the hider.
 
 ## Benign suite
 

@@ -22,9 +22,11 @@ def test_summarize_counts_scans_and_catches():
 
 
 def test_summarize_reports_median_and_p95_scan_time():
+    # Linear-interpolated percentiles, as the simulation reports them:
+    # sorted [2, 4, 4, 10], p95 sits 0.85 of the way from 4 to 10.
     s = summarize(SCANNER_OUT.splitlines(), seconds=2.0)
     assert s.p50_scan_ms == pytest.approx(4.0)
-    assert s.p95_scan_ms == pytest.approx(10.0)
+    assert s.p95_scan_ms == pytest.approx(9.1)
 
 
 def test_summarize_with_no_scans_has_no_latency():
