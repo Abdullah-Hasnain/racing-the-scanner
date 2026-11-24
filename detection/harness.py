@@ -10,7 +10,8 @@ Live (needs root and an installed Tracee; not runnable in CI):
       --attacker-comm v2 --benign-comm python
 
 Processes matching neither the attacker nor the benign selectors are ignored.
-A row is appended to $RTS_RESULTS_DIR/detection_g5.csv (default ./results).
+Three rows (default_sigs, custom, ai) are appended per run to
+$RTS_RESULTS_DIR/detection_g5.csv (default ./results).
 """
 
 from __future__ import annotations
@@ -26,15 +27,15 @@ import sys
 import time
 import uuid
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from detection import aggregator, triage_llm
 
 CSV_NAME = "detection_g5.csv"
 CSV_COLUMNS = [
-    "run_id", "mode", "attacker", "benign", "n_attackers", "n_benign",
-    "caught", "false_alarms", "catch_rate", "fp_rate", "triage_backend",
+    "run_id", "mode", "detector", "attacker", "benign", "n_attackers", "n_benign",
+    "caught", "false_alarms", "catch_rate", "fp_rate", "triage_backend", "triage_ms_mean",
 ]
 DEFAULT_POLICY = "detection/tracee/memory-hiding.yaml"
 
@@ -44,7 +45,7 @@ class LabelledVerdict:
     pid: int
     comm: str
     is_attacker: bool
-    flagged: bool  # triage said "suspicious"
+    flagged: bool  # the detector fired on this process
 
 
 @dataclass(frozen=True)
@@ -75,6 +76,28 @@ def score(verdicts: Iterable[LabelledVerdict]) -> Score:
     )
 
 
+# name -> does this detector fire, given the feature record and its triage result.
+# Row order in the CSV follows this table. "ai" is the only one that uses triage.
+DETECTORS: dict[str, Callable[[dict, dict], bool]] = {
+    "default_sigs": lambda rec, tri: rec.get("tracee_alerts", 0) > 0,
+    "custom": lambda rec, tri: (
+        rec.get("none_rw_flips", 0) >= 1
+        or rec.get("n_userfaultfd", 0) >= 1
+        or rec.get("n_memfd_secret", 0) >= 1
+    ),
+    "ai": lambda rec, tri: tri.get("verdict") == "suspicious",
+}
+AI = "ai"
+
+
+@dataclass(frozen=True)
+class Evaluation:
+    scores: dict[str, Score]  # one per detector, over the same labelled records
+    triage_ms_mean: float | None  # wall-clock ms per triage call, labelled records only
+    fell_back: bool  # triage used the heuristic for at least one record
+    triage_backend: str = ""
+
+
 def _matches(pid: int, comm: str, comms: Sequence[str], pids: Sequence[int]) -> bool:
     return pid in pids or any(comm.startswith(c) for c in comms)
 
@@ -86,11 +109,13 @@ def label_and_score(
     benign_comm: Sequence[str] = (),
     attacker_pid: Sequence[int] = (),
     benign_pid: Sequence[int] = (),
-) -> Score:
-    """Triage each feature record and score it. Records are opaque apart from
-    pid/comm. A record matching both sides counts as an attacker; one matching
-    neither is ignored."""
-    out: list[LabelledVerdict] = []
+) -> Evaluation:
+    """Triage each labelled feature record once and score every detector on it.
+    A record matching both sides counts as an attacker; one matching neither is
+    ignored (and not triaged)."""
+    out: dict[str, list[LabelledVerdict]] = {name: [] for name in DETECTORS}
+    times_ms: list[float] = []
+    fell_back = False
     for rec in records:
         pid, comm = int(rec.get("pid", -1)), str(rec.get("comm", ""))
         if _matches(pid, comm, attacker_comm, attacker_pid):
@@ -99,9 +124,17 @@ def label_and_score(
             is_att = False
         else:
             continue
-        flagged = triage_fn(rec).get("verdict") == "suspicious"
-        out.append(LabelledVerdict(pid, comm, is_att, flagged))
-    return score(out)
+        t0 = time.perf_counter()
+        tri = triage_fn(rec)
+        times_ms.append((time.perf_counter() - t0) * 1000)
+        fell_back = fell_back or "heuristic fallback" in str(tri.get("reason", ""))
+        for name, fires in DETECTORS.items():
+            out[name].append(LabelledVerdict(pid, comm, is_att, fires(rec, tri)))
+    return Evaluation(
+        scores={name: score(vs) for name, vs in out.items()},
+        triage_ms_mean=sum(times_ms) / len(times_ms) if times_ms else None,
+        fell_back=fell_back,
+    )
 
 
 def run_offline(
@@ -111,26 +144,28 @@ def run_offline(
     benign_comm: Sequence[str] = (),
     attacker_pid: Sequence[int] = (),
     benign_pid: Sequence[int] = (),
-) -> tuple[Score, str]:
-    """aggregate -> triage -> score. Returns the score and the backend name."""
+) -> Evaluation:
+    """aggregate -> triage -> score all detectors."""
     records = [w.as_features() for w in aggregator.aggregate(log_lines).values()]
+    fn = triage_llm._heuristic if no_llm else triage_llm.triage
+    ev = label_and_score(records, fn, attacker_comm, benign_comm, attacker_pid, benign_pid)
     if no_llm:
-        fn, backend = triage_llm._heuristic, "heuristic"
+        backend = "heuristic"
     else:
-        fn, backend = triage_llm.triage, f"llm:{triage_llm.LLM_MODEL}"
-    sc = label_and_score(records, fn, attacker_comm, benign_comm, attacker_pid, benign_pid)
-    return sc, backend
+        kind = "llm-fallback" if ev.fell_back else "llm"
+        backend = f"{kind}:{triage_llm.LLM_MODEL}"
+    return replace(ev, triage_backend=backend)
 
 
 def results_dir() -> Path:
     return Path(os.environ.get("RTS_RESULTS_DIR", "results"))
 
 
-def _fmt(x: float | None) -> str:
-    return "" if x is None else f"{x:.4f}"
+def _fmt(x: float | None, places: int = 4) -> str:
+    return "" if x is None else f"{x:.{places}f}"
 
 
-def write_row(run_id: str, mode: str, attacker: str, benign: str, sc: Score, backend: str) -> Path:
+def write_rows(run_id: str, mode: str, attacker: str, benign: str, ev: Evaluation) -> Path:
     d = results_dir()
     d.mkdir(parents=True, exist_ok=True)
     path = d / CSV_NAME
@@ -139,10 +174,13 @@ def write_row(run_id: str, mode: str, attacker: str, benign: str, sc: Score, bac
         w = csv.writer(f)
         if new:
             w.writerow(CSV_COLUMNS)
-        w.writerow([
-            run_id, mode, attacker, benign, sc.n_attackers, sc.n_benign,
-            sc.caught, sc.false_alarms, _fmt(sc.catch_rate), _fmt(sc.fp_rate), backend,
-        ])
+        for name, sc in ev.scores.items():
+            ai = name == AI
+            w.writerow([
+                run_id, mode, name, attacker, benign, sc.n_attackers, sc.n_benign,
+                sc.caught, sc.false_alarms, _fmt(sc.catch_rate), _fmt(sc.fp_rate),
+                ev.triage_backend if ai else "", _fmt(ev.triage_ms_mean, 3) if ai else "",
+            ])
     return path
 
 
@@ -230,17 +268,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         log_path, mode = Path(args.tracee_log), "offline"
     with log_path.open() as f:
-        sc, backend = run_offline(
+        ev = run_offline(
             f, args.no_llm, args.attacker_comm, args.benign_comm,
             args.attacker_pid, args.benign_pid,
         )
     attacker = " ".join(args.attacker_comm + [str(p) for p in args.attacker_pid])
     benign = " ".join(args.benign_comm + [str(p) for p in args.benign_pid])
-    csv_path = write_row(run_id, mode, attacker, benign, sc, backend)
+    csv_path = write_rows(run_id, mode, attacker, benign, ev)
     print(json.dumps({
-        "run_id": run_id, "mode": mode, "n_attackers": sc.n_attackers, "n_benign": sc.n_benign,
-        "caught": sc.caught, "false_alarms": sc.false_alarms,
-        "catch_rate": sc.catch_rate, "fp_rate": sc.fp_rate, "triage_backend": backend,
+        "run_id": run_id, "mode": mode,
+        "detectors": {
+            n: {"n_attackers": sc.n_attackers, "n_benign": sc.n_benign, "caught": sc.caught,
+                "false_alarms": sc.false_alarms, "catch_rate": sc.catch_rate, "fp_rate": sc.fp_rate}
+            for n, sc in ev.scores.items()
+        },
+        "triage_backend": ev.triage_backend, "triage_ms_mean": ev.triage_ms_mean,
         "csv": str(csv_path),
     }))
     return 0
