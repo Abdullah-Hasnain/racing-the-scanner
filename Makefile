@@ -7,7 +7,7 @@ help:
 	@echo "Racing the Scanner - common commands"
 	@echo "  make setup    Install core Python deps into the current environment"
 	@echo "  make lint     Run ruff (same check CI runs)"
-	@echo "  make test     Run the simulation unit tests"
+	@echo "  make test     Run the unit tests (sim and detection)"
 	@echo "  make sim      Run one quick simulation (baseline policy, smoke test)"
 	@echo "  make sweep    Run the full policy sweep (all schedulers vs the attack)"
 	@echo "  make graphs   Build G1-G6 figures from the latest results/"

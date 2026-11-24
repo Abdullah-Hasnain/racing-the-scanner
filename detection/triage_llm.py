@@ -29,18 +29,28 @@ LLM_MODEL = os.environ.get("RTS_LLM_MODEL", "llama3.1:8b")
 
 SYSTEM = (
     "You are a security triage assistant. You are given counts of memory-related "
-    "syscalls for one Linux process over one second. Decide if the behavior is "
+    "events for one Linux process over a capture. Decide if the behavior is "
     "BENIGN (normal JIT or garbage collector: many RW<->RX mprotect flips, guard "
-    "pages, MADV_DONTNEED during GC) or SUSPICIOUS (hiding: PROT_NONE<->RW single "
-    "pages with SIGSEGV faults, userfaultfd refills, or memfd_secret). "
+    "pages, MADV_DONTNEED during GC) or SUSPICIOUS (hiding: pages repeatedly locked "
+    "to PROT_NONE and unlocked again, userfaultfd refills, or memfd_secret).\n"
+    "The features are:\n"
+    "- none_rw_flips: mprotect changes to or from PROT_NONE (lock or unlock). "
+    "Many of these are the hallmark of hiding.\n"
+    "- rw_rx_flips: mprotect changes between writable and executable. Many of "
+    "these are the hallmark of a JIT.\n"
+    "- n_userfaultfd, n_memfd_secret: syscall counts. Benign JIT and GC apps do "
+    "not use these; any count above 0 is suspicious.\n"
+    "- n_mprotect, n_madvise: syscall counts, common in benign apps.\n"
+    "- sigsegv: not measured yet, always 0. Ignore it.\n"
+    "- threads, tracee_alerts: thread count and Tracee signature alerts.\n"
     "Answer with a JSON object: {\"verdict\": \"benign|suspicious\", \"reason\": \"...\"}."
 )
 
 
 def _heuristic(rec: dict) -> dict:
     """Transparent fallback when no LLM is reachable."""
-    hiding = rec.get("prot_none_to_rw", 0) + rec.get("n_userfaultfd", 0) + rec.get("n_memfd_secret", 0)
-    jit = rec.get("rw_to_rx", 0)
+    hiding = rec.get("none_rw_flips", 0) + rec.get("n_userfaultfd", 0) + rec.get("n_memfd_secret", 0)
+    jit = rec.get("rw_rx_flips", 0)
     verdict = "suspicious" if hiding > jit and hiding > 0 else "benign"
     return {"verdict": verdict, "reason": "heuristic fallback (LLM unreachable)"}
 
@@ -50,7 +60,10 @@ def triage(rec: dict, timeout: float = 20.0) -> dict:
     try:
         r = requests.post(
             f"{LLM_URL}/api/generate",
-            json={"model": LLM_MODEL, "prompt": prompt, "stream": False, "format": "json"},
+            json={
+                "model": LLM_MODEL, "prompt": prompt, "stream": False, "format": "json",
+                "options": {"temperature": 0},  # same record, same verdict
+            },
             timeout=timeout,
         )
         r.raise_for_status()
