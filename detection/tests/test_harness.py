@@ -49,15 +49,15 @@ def log():
 
 
 def rec(pid, comm, **f):
-    return {"pid": pid, "comm": comm, "none_rw_flips": 0, "n_userfaultfd": 0,
+    return {"pid": pid, "comm": comm, "none_rw_flips": 0, "relock_trips": 0, "n_userfaultfd": 0,
             "n_memfd_secret": 0, "rw_rx_flips": 0, "tracee_alerts": 0, **f}
 
 
 def disagreeing_records():
     return [
-        rec(1, "v2", none_rw_flips=5),                      # hider: custom + ai catch, no alert
+        rec(1, "v2", none_rw_flips=5, relock_trips=2),      # hider: custom + ai catch, no alert
         rec(2, "jit", tracee_alerts=3, rw_rx_flips=9),      # benign: default_sigs false alarm
-        rec(3, "gogc", none_rw_flips=2, rw_rx_flips=2),     # benign: custom false alarm, ai quiet
+        rec(3, "gogc", none_rw_flips=2, relock_trips=1, rw_rx_flips=2),  # custom false alarm, ai quiet
     ]
 
 
@@ -68,6 +68,13 @@ def test_three_detectors_disagree_on_same_records():
     got = {n: (s.caught, s.false_alarms) for n, s in ev.scores.items()}
     assert got == {"default_sigs": (0, 1), "custom": (1, 1), "ai": (1, 0)}
     assert all((s.n_attackers, s.n_benign) == (1, 2) for s in ev.scores.values())
+
+
+def test_custom_ignores_runtime_flips_without_relocks():
+    # Real capture: the JVM made 1,413 PROT_NONE flips but relocked no region.
+    java = rec(4, "java", none_rw_flips=1413)
+    assert not harness.DETECTORS["custom"](java, {})
+    assert harness.DETECTORS["custom"](rec(1, "v2", none_rw_flips=41, relock_trips=20), {})
 
 
 def test_triage_latency_is_mean_ms_over_labelled_records_only():

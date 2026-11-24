@@ -87,7 +87,7 @@ def score(verdicts: Iterable[LabelledVerdict]) -> Score:
 DETECTORS: dict[str, Callable[[dict, dict], bool]] = {
     "default_sigs": lambda rec, tri: rec.get("tracee_alerts", 0) > 0,
     "custom": lambda rec, tri: (
-        rec.get("none_rw_flips", 0) >= 1
+        rec.get("relock_trips", 0) >= 1
         or rec.get("n_userfaultfd", 0) >= 1
         or rec.get("n_memfd_secret", 0) >= 1
     ),
