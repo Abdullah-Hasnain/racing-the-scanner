@@ -38,15 +38,15 @@ def log():
     # renders a PROT_NONE region's prev_prot (vm_flags 0x70) as "".
     lsm = "security_file_mprotect"
     page = {"addr": "0x7f0000001000", "len": 4096}
-    hide = {"prev_prot": "", "prot": "PROT_READ|PROT_WRITE", **page}  # unlock
+    unlock = {"prev_prot": "", "prot": "PROT_READ|PROT_WRITE", **page}
     relock = {"prev_prot": "PROT_READ|PROT_WRITE", "prot": "", **page}
     jit = {"prev_prot": "PROT_READ|PROT_WRITE", "prot": "PROT_READ|PROT_EXEC"}
     return [
-        *[e for _ in range(5) for e in (_ev(100, "v2", lsm, **hide), _ev(100, "v2", lsm, **relock))],
+        *[e for _ in range(5) for e in (_ev(100, "v2", lsm, **unlock), _ev(100, "v2", lsm, **relock))],
         _ev(101, "v3", "userfaultfd"),
         *[_ev(200, "node", lsm, **jit) for _ in range(5)],
         _ev(201, "python3", lsm, **jit),
-        _ev(300, "bash", lsm, **hide),  # unlabelled, must be ignored
+        _ev(300, "bash", lsm, **unlock),  # unlabelled, must be ignored
     ]
 
 

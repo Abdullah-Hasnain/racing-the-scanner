@@ -72,7 +72,12 @@ def _flip(prev: Prot, new: Prot) -> Flip | None:
 
 
 def _int(value: int | str) -> int:
+    """An int Tracee printed raw or as a hex string (pointers, "0x0")."""
     return int(value, 16) if isinstance(value, str) else int(value)
+
+
+def _args(event: dict) -> dict:
+    return {a.get("name"): a.get("value") for a in event.get("args", [])}
 
 
 @dataclass
@@ -83,7 +88,8 @@ class ProcessFeatures:
     flips: dict[Flip, int] = field(default_factory=lambda: defaultdict(int))
     segv_handlers: int = 0  # rt_sigaction calls that install a SIGSEGV handler
     relock_trips: int = 0  # regions unlocked from PROT_NONE, then locked again
-    unlocked: set[tuple[int, int]] = field(default_factory=set)  # (addr, len) now open
+    # working state, not a feature: (addr, len) regions unlocked and not yet relocked
+    unlocked: set[tuple[int, int]] = field(default_factory=set, repr=False)
     alerts: int = 0
 
     def mprotect(self, event: dict) -> None:
@@ -92,7 +98,7 @@ class ProcessFeatures:
         Only this LSM event has prev_prot; the raw mprotect syscall event does not.
         A round trip is keyed by the exact (addr, len) the unlock used.
         """
-        args = {a.get("name"): a.get("value") for a in event.get("args", [])}
+        args = _args(event)
         if "prot" not in args or "prev_prot" not in args:
             return
         prev, new = _parse_prot(args["prev_prot"]), _parse_prot(args["prot"])
@@ -126,7 +132,7 @@ def _installs_segv_handler(event: dict) -> bool:
     Tracee has no SIGSEGV-delivery event; see "Signal features" in README.md.
     Tracee prints signum as an int and pointers as hex strings ("0x0" is null).
     """
-    args = {a.get("name"): a.get("value") for a in event.get("args", [])}
+    args = _args(event)
     act = args.get("act") or 0
     return args.get("signum") == SIGSEGV and _int(act) != 0
 
