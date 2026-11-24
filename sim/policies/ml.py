@@ -41,7 +41,10 @@ from sklearn.svm import SVC, OneClassSVM
 from sim.policies.base import Policy
 from sim.process import Process
 
-CONTAM = 0.06  # expected outlier fraction, shared across detectors
+# Shared operating point for every unsupervised detector: the fraction of clean
+# training windows it flags. Training data is legitimate by construction, so this
+# is a false-positive budget, not an expected attack rate.
+CONTAM = 0.01
 
 # Label convention for supervised policies.
 NORMAL, HOG, MONITOR = 0, 1, 2
@@ -66,10 +69,17 @@ class PredictOutlier:
 
 
 class GmmOutlier:
-    def __init__(self, n_components: int = 3, contamination: float = CONTAM):
+    def __init__(
+        self,
+        n_components: int = 1,
+        covariance_type: str = "diag",
+        contamination: float = CONTAM,
+    ):
         self.contam = contamination
         self.scaler = StandardScaler()
-        self.gmm = GaussianMixture(n_components=n_components, random_state=0)
+        self.gmm = GaussianMixture(
+            n_components=n_components, covariance_type=covariance_type, random_state=0
+        )
         self.thr = 0.0
 
     def fit(self, X: np.ndarray) -> None:
@@ -82,7 +92,7 @@ class GmmOutlier:
 
 
 class KnnOutlier:
-    def __init__(self, k: int = 5, contamination: float = CONTAM):
+    def __init__(self, k: int = 200, contamination: float = CONTAM):
         self.k = k
         self.contam = contamination
         self.scaler = StandardScaler()
@@ -91,8 +101,11 @@ class KnnOutlier:
 
     def fit(self, X: np.ndarray) -> None:
         Xs = self.scaler.fit_transform(X)
-        self.nn = NearestNeighbors(n_neighbors=self.k).fit(Xs)
-        kd = self.nn.kneighbors(Xs)[0][:, -1]
+        k = min(self.k, len(Xs) - 1)
+        self.nn = NearestNeighbors(n_neighbors=k, n_jobs=1).fit(Xs)
+        # kneighbors() with no X excludes each training point from its own
+        # neighbors, so the threshold matches what an unseen point will score.
+        kd = self.nn.kneighbors()[0][:, -1]
         self.thr = float(np.quantile(kd, 1.0 - self.contam))
 
     def outlier_mask(self, X: np.ndarray) -> np.ndarray:
@@ -103,7 +116,7 @@ class KnnOutlier:
 class HbosOutlier:
     """Histogram-based outlier score: cheap, per-feature density."""
 
-    def __init__(self, bins: int = 10, contamination: float = CONTAM):
+    def __init__(self, bins: int = 6, contamination: float = CONTAM):
         self.bins = bins
         self.contam = contamination
         self.scaler = StandardScaler()
@@ -195,21 +208,28 @@ def _autoencoder_builder():
 
     from sim.policies.autoencoder import TorchAutoencoderOutlier
 
-    return TorchAutoencoderOutlier()
+    return TorchAutoencoderOutlier(contamination=CONTAM)
 
 
 # ---- the ~15 augmented schedulers, grouped --------------------------------
+#
+# Hyperparameters are calibrated on held-out LEGITIMATE behavior (benign apps
+# never seen in training, plus the monitor) and the naive hog only; the mimicry
+# attacker is never used to choose them. See docs/architecture.md.
 
 def unsupervised_policies() -> list[MLPolicy]:
     return [
         MLPolicy("iforest", "ml-unsupervised", "unsupervised",
-                 lambda: PredictOutlier(lambda: IsolationForest(contamination=CONTAM, random_state=0))),
+                 lambda: PredictOutlier(lambda: IsolationForest(contamination=CONTAM, random_state=0, n_jobs=1))),
         MLPolicy("ocsvm", "ml-unsupervised", "unsupervised",
-                 lambda: PredictOutlier(lambda: OneClassSVM(nu=CONTAM, gamma="scale"))),
+                 lambda: PredictOutlier(lambda: OneClassSVM(nu=CONTAM, gamma=0.01))),
+        # k stays below the smallest legitimate cluster (train_samples windows of
+        # one process) so the monitor's own cluster is never scored as an outlier.
         MLPolicy("lof", "ml-unsupervised", "unsupervised",
-                 lambda: PredictOutlier(lambda: LocalOutlierFactor(n_neighbors=20, novelty=True))),
+                 lambda: PredictOutlier(lambda: LocalOutlierFactor(
+                     n_neighbors=200, contamination=CONTAM, novelty=True, n_jobs=1))),
         MLPolicy("elliptic", "ml-unsupervised", "unsupervised",
-                 lambda: PredictOutlier(lambda: EllipticEnvelope(contamination=CONTAM, support_fraction=0.95))),
+                 lambda: PredictOutlier(lambda: EllipticEnvelope(contamination=CONTAM, random_state=0))),
         MLPolicy("knn", "ml-unsupervised", "unsupervised", KnnOutlier),
         MLPolicy("hbos", "ml-unsupervised", "unsupervised", HbosOutlier),
         MLPolicy("gmm", "ml-unsupervised", "unsupervised", GmmOutlier),
@@ -221,7 +241,7 @@ def unsupervised_policies() -> list[MLPolicy]:
 def supervised_policies() -> list[MLPolicy]:
     return [
         MLPolicy("rf", "ml-supervised", "supervised",
-                 lambda: ClfWrap(lambda: RandomForestClassifier(n_estimators=120, random_state=0))),
+                 lambda: ClfWrap(lambda: RandomForestClassifier(n_estimators=120, random_state=0, n_jobs=1))),
         MLPolicy("histgb", "ml-supervised", "supervised",
                  lambda: ClfWrap(lambda: HistGradientBoostingClassifier(random_state=0))),
         MLPolicy("logreg", "ml-supervised", "supervised",
@@ -231,7 +251,7 @@ def supervised_policies() -> list[MLPolicy]:
         MLPolicy("mlp", "ml-supervised", "supervised",
                  lambda: ClfWrap(lambda: MLPClassifier(hidden_layer_sizes=(32, 16), max_iter=800, random_state=0))),
         MLPolicy("knn_clf", "ml-supervised", "supervised",
-                 lambda: ClfWrap(lambda: KNeighborsClassifier(n_neighbors=7))),
+                 lambda: ClfWrap(lambda: KNeighborsClassifier(n_neighbors=7, n_jobs=1))),
         MLPolicy("naive_bayes", "ml-supervised", "supervised",
                  lambda: ClfWrap(GaussianNB)),
     ]

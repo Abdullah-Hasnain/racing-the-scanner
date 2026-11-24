@@ -26,10 +26,19 @@ class _AE(nn.Module):
 
 
 class TorchAutoencoderOutlier:
-    def __init__(self, epochs: int = 60, contamination: float = 0.06, lr: float = 1e-2):
+    def __init__(
+        self,
+        epochs: int = 60,
+        contamination: float = 0.01,
+        lr: float = 1e-2,
+        hidden: int = 8,
+        latent: int = 4,
+    ):
         self.epochs = epochs
         self.contam = contamination
         self.lr = lr
+        self.hidden = hidden
+        self.latent = latent
         self.scaler = StandardScaler()
         self.net: _AE | None = None
         self.thr = 0.0
@@ -44,7 +53,8 @@ class TorchAutoencoderOutlier:
 
     def fit(self, X: np.ndarray) -> None:
         Xs = self.scaler.fit_transform(X).astype(np.float32)
-        self.net = _AE(Xs.shape[1]).to(self.device)
+        torch.manual_seed(0)  # weight init is the only randomness; fix it like random_state=0
+        self.net = _AE(Xs.shape[1], hidden=self.hidden, latent=self.latent).to(self.device)
         opt = torch.optim.Adam(self.net.parameters(), lr=self.lr)
         loss_fn = nn.MSELoss()
         t = torch.tensor(Xs, device=self.device)
