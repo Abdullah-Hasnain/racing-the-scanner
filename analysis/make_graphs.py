@@ -125,6 +125,14 @@ def g3_attack_conditions() -> bool:
     return True
 
 
+DETECTOR_STYLE = {  # colour, marker, size
+    "default_sigs": ("#2ca02c", "s", 260),
+    "custom": ("#ff7f0e", "o", 150),
+    "ai": ("#1f77b4", "^", 70),
+}
+DEFAULT_STYLE = ("#888888", "D", 110)
+
+
 def pool_detection(df: pd.DataFrame) -> pd.DataFrame:
     """Pool runs per detector: sum caught / sum n_attackers, sum false_alarms / sum n_benign."""
     g = df.groupby("detector", as_index=False)[["caught", "n_attackers", "false_alarms", "n_benign"]].sum()
@@ -141,8 +149,13 @@ def g5_detection() -> bool:
         return False
     pooled = pool_detection(pd.read_csv(src))
     fig, ax = plt.subplots(figsize=(6.5, 5))
-    for i, r in enumerate(pooled.itertuples()):
-        ax.scatter(r.fp_rate, r.catch_rate, s=90, color=f"C{i}", zorder=3,
+    # Detectors often land on the same point, so each has its own colour, shape and
+    # size, drawn largest first: a point underneath still shows around the one on top.
+    pooled = pooled.assign(_size=pooled["detector"].map(lambda d: DETECTOR_STYLE.get(d, DEFAULT_STYLE)[2]))
+    for r in pooled.sort_values("_size", ascending=False).itertuples():
+        color, marker, size = DETECTOR_STYLE.get(r.detector, DEFAULT_STYLE)
+        ax.scatter(r.fp_rate, r.catch_rate, s=size, color=color, marker=marker, zorder=3,
+                   edgecolors="white", linewidths=0.8,
                    label=f"{DETECTOR_LABELS.get(r.detector, r.detector)} "
                          f"({r.caught}/{r.n_attackers} caught, {r.false_alarms}/{r.n_benign} false alarms)")
     ax.set_xlim(-0.03, 1.03)
