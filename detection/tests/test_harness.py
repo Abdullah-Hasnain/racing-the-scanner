@@ -1,6 +1,5 @@
 import csv
 import json
-import time
 
 import pytest
 
@@ -73,16 +72,21 @@ def test_three_detectors_disagree_on_same_records():
 
 def test_triage_latency_is_mean_ms_over_labelled_records_only():
     calls = []
+    ticks = iter(range(100))
 
-    def slow(r):
+    def clock():  # each triage call spans two ticks of 10 ms
+        return next(ticks) * 0.005
+
+    def triage(r):
         calls.append(r["pid"])
-        time.sleep(0.01)
         return {"verdict": "benign", "reason": ""}
 
     recs = [*disagreeing_records(), rec(9, "bash")]
-    ev = harness.label_and_score(recs, slow, attacker_comm=["v2"], benign_comm=["jit", "gogc"])
+    ev = harness.label_and_score(
+        recs, triage, attacker_comm=["v2"], benign_comm=["jit", "gogc"], clock=clock
+    )
     assert calls == [1, 2, 3]
-    assert ev.triage_ms_mean >= 10
+    assert ev.triage_ms_mean == pytest.approx(5.0)
 
 
 def test_offline_pipeline_no_llm(log):
@@ -128,25 +132,62 @@ def test_cli_writes_one_row_per_detector(log, tmp_path, monkeypatch, capsys):
     assert json.loads(capsys.readouterr().out.splitlines()[0])["detectors"]["ai"]["catch_rate"] == 1.0
 
 
-def test_llm_fallback_is_recorded_in_backend(monkeypatch):
-    monkeypatch.setattr(triage_llm, "LLM_MODEL", "m1")
-    monkeypatch.setattr(triage_llm, "triage", triage_llm._heuristic)  # heuristic reason says fallback
-    ev = harness.label_and_score(
-        disagreeing_records(), triage_llm.triage, attacker_comm=["v2"], benign_comm=["jit"]
-    )
-    assert ev.fell_back
-    ok = lambda r: {"verdict": "benign", "reason": "fine"}  # noqa: E731
-    ev = harness.label_and_score(disagreeing_records(), ok, attacker_comm=["v2"])
-    assert not ev.fell_back
+def test_fallback_is_read_from_source_not_reason():
+    sel = dict(attacker_comm=["v2"], benign_comm=["jit"], llm_model="m1")
+    # a reason mentioning fallback does not matter; only source does
+    llm = lambda r: {"verdict": "benign", "reason": "heuristic fallback", "source": "llm"}  # noqa: E731
+    ev = harness.label_and_score(disagreeing_records(), llm, **sel)
+    assert not ev.fell_back and ev.triage_backend == "llm:m1"
+    down = lambda r: {"verdict": "benign", "reason": "x", "source": "heuristic"}  # noqa: E731
+    ev = harness.label_and_score(disagreeing_records(), down, **sel)
+    assert ev.fell_back and ev.triage_backend == "llm-fallback:m1"
+
+
+def test_triage_reports_source(monkeypatch):
+    class Boom:
+        @staticmethod
+        def post(*a, **k):
+            raise OSError("down")
+
+    monkeypatch.setattr(triage_llm, "requests", Boom)
+    assert triage_llm.triage(rec(1, "v2"))["source"] == "heuristic"
+
+    class Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"response": '{"verdict": "suspicious", "reason": "r"}'}
+
+    monkeypatch.setattr(triage_llm, "requests", type("R", (), {"post": staticmethod(lambda *a, **k: Resp())}))
+    assert triage_llm.triage(rec(1, "v2")) == {"verdict": "suspicious", "reason": "r", "source": "llm"}
 
 
 def test_run_offline_names_llm_or_llm_fallback(log, monkeypatch):
     monkeypatch.setattr(triage_llm, "LLM_MODEL", "m1")
     sel = dict(attacker_comm=["v2"], benign_comm=["node"])
-    monkeypatch.setattr(triage_llm, "triage", lambda r: {"verdict": "benign", "reason": "ok"})
+    monkeypatch.setattr(
+        triage_llm, "triage", lambda r: {"verdict": "benign", "reason": "ok", "source": "llm"}
+    )
     assert harness.run_offline(log, False, **sel).triage_backend == "llm:m1"
-    monkeypatch.setattr(triage_llm, "triage", triage_llm._heuristic)
+    monkeypatch.setattr(
+        triage_llm, "triage", lambda r: {"verdict": "benign", "reason": "ok", "source": "heuristic"}
+    )
     assert harness.run_offline(log, False, **sel).triage_backend == "llm-fallback:m1"
+
+
+def test_tracee_command_loads_both_policies_and_install_path():
+    args = harness.build_parser().parse_args(["--live", "--attacker-comm", "v2"])
+    cmd = harness.tracee_command("/bin/tracee", args.policy or harness.DEFAULT_POLICIES, args.install_path)
+    pairs = list(zip(cmd, cmd[1:], strict=False))
+    assert ("--policy", "detection/tracee/memory-hiding.yaml") in pairs
+    assert ("--policy", "detection/tracee/default-signatures.yaml") in pairs
+    assert ("--install-path", "/tmp/tracee-install") in pairs
+
+
+def test_policy_option_is_repeatable():
+    args = harness.build_parser().parse_args(["--policy", "a.yaml", "--policy", "b.yaml"])
+    assert args.policy == ["a.yaml", "b.yaml"]
 
 
 def test_live_fails_clearly_without_tracee():

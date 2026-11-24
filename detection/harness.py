@@ -27,7 +27,7 @@ import sys
 import time
 import uuid
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 
 from detection import aggregator, triage_llm
@@ -37,7 +37,13 @@ CSV_COLUMNS = [
     "run_id", "mode", "detector", "attacker", "benign", "n_attackers", "n_benign",
     "caught", "false_alarms", "catch_rate", "fp_rate", "triage_backend", "triage_ms_mean",
 ]
-DEFAULT_POLICY = "detection/tracee/memory-hiding.yaml"
+DEFAULT_POLICIES = [
+    "detection/tracee/memory-hiding.yaml",
+    "detection/tracee/default-signatures.yaml",
+]
+# Tracee drops root's file-permission override before creating its install dir,
+# so it must not live under a private home directory.
+DEFAULT_INSTALL_PATH = "/tmp/tracee-install"
 
 
 @dataclass(frozen=True)
@@ -95,7 +101,7 @@ class Evaluation:
     scores: dict[str, Score]  # one per detector, over the same labelled records
     triage_ms_mean: float | None  # wall-clock ms per triage call, labelled records only
     fell_back: bool  # triage used the heuristic for at least one record
-    triage_backend: str = ""
+    triage_backend: str  # "heuristic", "llm:<model>" or "llm-fallback:<model>"
 
 
 def _matches(pid: int, comm: str, comms: Sequence[str], pids: Sequence[int]) -> bool:
@@ -109,10 +115,13 @@ def label_and_score(
     benign_comm: Sequence[str] = (),
     attacker_pid: Sequence[int] = (),
     benign_pid: Sequence[int] = (),
+    llm_model: str | None = None,
+    clock: Callable[[], float] = time.perf_counter,
 ) -> Evaluation:
     """Triage each labelled feature record once and score every detector on it.
     A record matching both sides counts as an attacker; one matching neither is
-    ignored (and not triaged)."""
+    ignored (and not triaged). `llm_model` is None when triage_fn is the plain
+    heuristic; otherwise triage_fn reports its `source` per record."""
     out: dict[str, list[LabelledVerdict]] = {name: [] for name in DETECTORS}
     times_ms: list[float] = []
     fell_back = False
@@ -124,16 +133,21 @@ def label_and_score(
             is_att = False
         else:
             continue
-        t0 = time.perf_counter()
+        t0 = clock()
         tri = triage_fn(rec)
-        times_ms.append((time.perf_counter() - t0) * 1000)
-        fell_back = fell_back or "heuristic fallback" in str(tri.get("reason", ""))
+        times_ms.append((clock() - t0) * 1000)
+        fell_back = fell_back or tri.get("source") == "heuristic"
         for name, fires in DETECTORS.items():
             out[name].append(LabelledVerdict(pid, comm, is_att, fires(rec, tri)))
+    if llm_model is None:
+        backend = "heuristic"
+    else:
+        backend = f"{'llm-fallback' if fell_back else 'llm'}:{llm_model}"
     return Evaluation(
         scores={name: score(vs) for name, vs in out.items()},
         triage_ms_mean=sum(times_ms) / len(times_ms) if times_ms else None,
         fell_back=fell_back,
+        triage_backend=backend,
     )
 
 
@@ -148,13 +162,10 @@ def run_offline(
     """aggregate -> triage -> score all detectors."""
     records = [w.as_features() for w in aggregator.aggregate(log_lines).values()]
     fn = triage_llm._heuristic if no_llm else triage_llm.triage
-    ev = label_and_score(records, fn, attacker_comm, benign_comm, attacker_pid, benign_pid)
-    if no_llm:
-        backend = "heuristic"
-    else:
-        kind = "llm-fallback" if ev.fell_back else "llm"
-        backend = f"{kind}:{triage_llm.LLM_MODEL}"
-    return replace(ev, triage_backend=backend)
+    model = None if no_llm else triage_llm.LLM_MODEL
+    return label_and_score(
+        records, fn, attacker_comm, benign_comm, attacker_pid, benign_pid, llm_model=model
+    )
 
 
 def results_dir() -> Path:
@@ -184,6 +195,14 @@ def write_rows(run_id: str, mode: str, attacker: str, benign: str, ev: Evaluatio
     return path
 
 
+def tracee_command(tracee: str, policies: Sequence[str], install_path: str) -> list[str]:
+    cmd = ["sudo", tracee]
+    for policy in policies:
+        cmd += ["--policy", policy]
+    cmd += ["--install-path", install_path]
+    return cmd + ["--output", "json", "--output", "option:parse-arguments"]
+
+
 def run_live(args: argparse.Namespace, run_id: str) -> Path:
     """Launch Tracee, the attacker and a benign workload, wait, stop, and
     return the path of the saved raw Tracee log."""
@@ -206,10 +225,7 @@ def run_live(args: argparse.Namespace, run_id: str) -> Path:
     benign_cmd = [sys.executable, "detection/benign/run_benign.py"]
     benign_cmd += ["--workload", args.workload] if args.workload else ["--stub"]
     benign_cmd += ["--seconds", str(args.seconds)]
-    tracee_cmd = [
-        "sudo", tracee, "--policy", args.policy,
-        "--output", "json", "--output", "option:parse-arguments",
-    ]
+    tracee_cmd = tracee_command(tracee, args.policy or DEFAULT_POLICIES, args.install_path)
 
     procs: list[subprocess.Popen] = []
     with log_path.open("w") as out, open(d / f"tracee_{run_id}.stderr", "w") as err:
@@ -248,7 +264,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--workload", help="live: benign workload name (default: --stub)")
     ap.add_argument("--seconds", type=int, default=20, help="live: run length")
     ap.add_argument("--tracee-bin", default="tracee")
-    ap.add_argument("--policy", default=DEFAULT_POLICY)
+    ap.add_argument(
+        "--policy", action="append",
+        help=f"live: Tracee policy file, repeatable (default: {' and '.join(DEFAULT_POLICIES)})",
+    )
+    ap.add_argument("--install-path", default=DEFAULT_INSTALL_PATH, help="live: Tracee install dir")
     ap.add_argument("--tracee-warmup", type=float, default=5.0)
     return ap
 
