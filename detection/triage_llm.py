@@ -35,23 +35,32 @@ SYSTEM = (
     "to PROT_NONE and unlocked again, userfaultfd refills, or memfd_secret).\n"
     "The features are:\n"
     "- none_rw_flips: mprotect changes to or from PROT_NONE (lock or unlock). "
-    "Many of these are the hallmark of hiding.\n"
+    "Runtimes such as V8 and the JVM make many of these when they commit heap "
+    "and set guard pages, so on their own they prove nothing.\n"
+    "- relock_trips: memory regions unlocked from PROT_NONE and then locked "
+    "again. This round trip is the hallmark of hiding; the benign runtimes we "
+    "measured (Node 22, JDK 25, Go 1.26) made none.\n"
     "- rw_rx_flips: mprotect changes between writable and executable. Many of "
     "these are the hallmark of a JIT.\n"
     "- n_userfaultfd, n_memfd_secret: syscall counts. Benign JIT and GC apps do "
     "not use these; any count above 0 is suspicious.\n"
     "- n_mprotect, n_madvise: syscall counts, common in benign apps.\n"
-    "- sigsegv: not measured yet, always 0. Ignore it.\n"
-    "- threads, tracee_alerts: thread count and Tracee signature alerts.\n"
+    "- segv_handlers: times the process installed a SIGSEGV handler. Runtimes "
+    "(Go, Java) install one too, so on its own it proves nothing.\n"
+    "- tracee_alerts: Tracee signature alerts that fired for the process.\n"
     "Answer with a JSON object: {\"verdict\": \"benign|suspicious\", \"reason\": \"...\"}."
 )
 
 
 def _heuristic(rec: dict) -> dict:
-    """Transparent fallback when no LLM is reachable."""
-    hiding = rec.get("none_rw_flips", 0) + rec.get("n_userfaultfd", 0) + rec.get("n_memfd_secret", 0)
-    jit = rec.get("rw_rx_flips", 0)
-    verdict = "suspicious" if hiding > jit and hiding > 0 else "benign"
+    """Transparent fallback when no LLM is reachable.
+
+    userfaultfd and memfd_secret are suspicious on their own, as the prompt says:
+    V3/V4 call them once at setup, so JIT flips must not outvote them.
+    """
+    relocks, jit = rec.get("relock_trips", 0), rec.get("rw_rx_flips", 0)
+    hiding_syscalls = rec.get("n_userfaultfd", 0) + rec.get("n_memfd_secret", 0)
+    verdict = "suspicious" if hiding_syscalls > 0 or relocks > jit else "benign"
     return {"verdict": verdict, "reason": "heuristic fallback (LLM unreachable)"}
 
 
@@ -68,7 +77,8 @@ def triage(rec: dict, timeout: float = 20.0) -> dict:
         )
         r.raise_for_status()
         out = json.loads(r.json()["response"])
-        return {"verdict": out.get("verdict", "benign"), "reason": out.get("reason", "")}
+        verdict = str(out.get("verdict", "benign")).strip().lower()  # models echo "SUSPICIOUS"
+        return {"verdict": verdict, "reason": out.get("reason", "")}
     except Exception as exc:  # unreachable, timeout, or bad JSON
         res = _heuristic(rec)
         res["reason"] += f" [{type(exc).__name__}]"
