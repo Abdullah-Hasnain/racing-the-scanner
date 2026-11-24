@@ -66,6 +66,11 @@ Counts are per memory region (VMA), not per call: the kernel runs the LSM hook
 once for each VMA an mprotect call spans. V2 touches one page per call, so it is
 unaffected; a JIT protecting a range that spans several VMAs counts more than once.
 
+Two consequences for G5 and hand-written fixtures. Flips come only from
+`security_file_mprotect`, so a log without the raw `mprotect` syscall event has
+`n_mprotect` 0 beside nonzero flip counts. And a JIT that skips W^X and flips
+RW to RWX never loses write access, so it adds no `rw_rx_flips`.
+
 Tracee reports `prev_prot` as the region's raw vm_flags (for example `0x70` for a
 PROT_NONE region); only the R/W/X bits are read. With `parse-arguments`, a
 PROT_NONE region's `prev_prot` renders as `""`, not `"PROT_NONE"`. Both forms
@@ -105,8 +110,8 @@ section, and the G5 `default_sigs` detector would measure nothing. v0.23.2 loads
 `security_file_mprotect` and `rt_sigaction` with the same fields.
 
 Tracee needs real root: `perf_event_paranoid` is 4 on Ubuntu, so the `CAP_BPF` +
-`CAP_PERFMON` route does not apply. Run it from a real terminal, since `sudo`
-cannot prompt inside Claude Code's `!` commands.
+`CAP_PERFMON` route does not apply. Run it from an interactive terminal where
+`sudo` can prompt.
 
 ```bash
 mkdir -p ~/tracee/out && cd ~/tracee

@@ -1,5 +1,8 @@
 """The heuristic fallback judges hiding by relocked regions, not raw flips (#13)."""
 
+import json
+
+from detection import triage_llm
 from detection.triage_llm import _heuristic
 
 
@@ -22,3 +25,22 @@ def test_slow_hider_relocking_is_suspicious():
 def test_userfaultfd_or_memfd_secret_alone_is_suspicious():
     assert _heuristic(rec(n_userfaultfd=1))["verdict"] == "suspicious"
     assert _heuristic(rec(n_memfd_secret=1))["verdict"] == "suspicious"
+
+
+def test_userfaultfd_or_memfd_secret_stays_suspicious_beside_jit_flips():
+    # V3/V4 call these once at setup; a few RW<->RX flips must not outvote them.
+    assert _heuristic(rec(n_userfaultfd=1, rw_rx_flips=2))["verdict"] == "suspicious"
+    assert _heuristic(rec(n_memfd_secret=1, rw_rx_flips=2))["verdict"] == "suspicious"
+
+
+def test_llm_verdict_is_normalized(monkeypatch):
+    # A small model may echo the prompt's "SUSPICIOUS" in capitals.
+    class Reply:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"response": json.dumps({"verdict": " SUSPICIOUS ", "reason": "relocks"})}
+
+    monkeypatch.setattr(triage_llm.requests, "post", lambda *a, **kw: Reply())
+    assert triage_llm.triage(rec(relock_trips=5))["verdict"] == "suspicious"

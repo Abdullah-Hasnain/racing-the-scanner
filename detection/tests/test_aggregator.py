@@ -145,3 +145,14 @@ def test_runtime_commits_and_guard_pages_are_not_relock_trips():
     f = features(lines)[9]
     assert f["relock_trips"] == 0
     assert f["none_rw_flips"] == 4
+
+
+def test_hand_written_hex_and_spaced_prots_parse_like_tracee_output():
+    # Fixtures written by hand may quote raw vm_flags as hex, or space the flag names.
+    lines = [
+        mprotect_event(7, "0x70", "PROT_READ | PROT_WRITE"),  # unlock from PROT_NONE
+        mprotect_event(9, "0x73", "0x5"),                     # RW (with VM_MAY*) to RX
+    ]
+    f = features(lines)
+    assert (f[7]["none_rw_flips"], f[7]["rw_rx_flips"]) == (1, 0)
+    assert (f[9]["none_rw_flips"], f[9]["rw_rx_flips"]) == (0, 1)

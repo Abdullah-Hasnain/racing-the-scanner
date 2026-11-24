@@ -55,10 +55,14 @@ SYSTEM = (
 
 
 def _heuristic(rec: dict) -> dict:
-    """Transparent fallback when no LLM is reachable."""
-    hiding = rec.get("relock_trips", 0) + rec.get("n_userfaultfd", 0) + rec.get("n_memfd_secret", 0)
-    jit = rec.get("rw_rx_flips", 0)
-    verdict = "suspicious" if hiding > jit and hiding > 0 else "benign"
+    """Transparent fallback when no LLM is reachable.
+
+    userfaultfd and memfd_secret are suspicious on their own, as the prompt says:
+    V3/V4 call them once at setup, so JIT flips must not outvote them.
+    """
+    relocks, jit = rec.get("relock_trips", 0), rec.get("rw_rx_flips", 0)
+    hiding_syscalls = rec.get("n_userfaultfd", 0) + rec.get("n_memfd_secret", 0)
+    verdict = "suspicious" if hiding_syscalls > 0 or relocks > jit else "benign"
     return {"verdict": verdict, "reason": "heuristic fallback (LLM unreachable)"}
 
 
@@ -75,11 +79,8 @@ def triage(rec: dict, timeout: float = 20.0) -> dict:
         )
         r.raise_for_status()
         out = json.loads(r.json()["response"])
-        return {
-            "verdict": out.get("verdict", "benign"),
-            "reason": out.get("reason", ""),
-            "source": "llm",
-        }
+        verdict = str(out.get("verdict", "benign")).strip().lower()  # models echo "SUSPICIOUS"
+        return {"verdict": verdict, "reason": out.get("reason", ""), "source": "llm"}
     except Exception as exc:  # unreachable, timeout, or bad JSON
         res = _heuristic(rec)
         res["reason"] += f" [{type(exc).__name__}]"
