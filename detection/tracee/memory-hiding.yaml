@@ -23,4 +23,4 @@ spec:
     - event: rt_sigaction   # a SIGSEGV handler being installed (V2 needs one)
       filters:
         - data.signum=11
-    - event: rt_sigreturn   # one per handled signal
+    # No rt_sigreturn: Tracee never emits it (see detection/README.md, Signal features).
