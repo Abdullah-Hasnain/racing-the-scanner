@@ -1,0 +1,166 @@
+scx_qmap: per-PID weight from a pinned BPF map (racing-the-scanner #11)
+
+Adds a BPF_MAP_TYPE_HASH map `pid_weight` (key pid_t tgid, value u32),
+pinned by name at /sys/fs/bpf/pid_weight. A task whose PID is in the map gets
+its time slice scaled by weight / 100 (100 = the nice-0 default), clamped to
+[200us, 1s]; every other task is scheduled exactly as stock scx_qmap.
+
+Base: Linux v7.0 (028ef9c96e96), tools/sched_ext. Apply from the tree root:
+  git apply /path/to/scx_qmap_pidweight.patch
+  make -C tools/sched_ext scx_qmap
+Write weights with scripts/scx_pid_weight.sh; demo: scripts/scx_qmap_demo.sh.
+
+diff --git a/tools/sched_ext/scx_qmap.bpf.c b/tools/sched_ext/scx_qmap.bpf.c
+index d51d8c38..c09d151c 100644
+--- a/tools/sched_ext/scx_qmap.bpf.c
++++ b/tools/sched_ext/scx_qmap.bpf.c
+@@ -18,6 +18,11 @@
+  * This scheduler is primarily for demonstration and testing of sched_ext
+  * features and unlikely to be useful for actual workloads.
+  *
++ * Per-PID weight override (racing-the-scanner #11): userspace writes
++ * pid -> weight into the hash map pinned at /sys/fs/bpf/pid_weight. 100 is the
++ * nice-0 default, and a listed task's time slice is scaled by weight / 100.
++ * PIDs that are not in the map are scheduled exactly as before.
++ *
+  * Copyright (c) 2022 Meta Platforms, Inc. and affiliates.
+  * Copyright (c) 2022 Tejun Heo <tj@kernel.org>
+  * Copyright (c) 2022 David Vernet <dvernet@meta.com>
+@@ -29,6 +34,9 @@ enum consts {
+ 	SHARED_DSQ		= 0,
+ 	HIGHPRI_DSQ		= 1,
+ 	HIGHPRI_WEIGHT		= 8668,		/* this is what -20 maps to */
++	PIDW_DFL		= 100,		/* pid_weight value meaning 1x */
++	PIDW_MIN_SLICE_NS	= 200000,	/* 200us floor */
++	PIDW_MAX_SLICE_NS	= ONE_SEC_IN_NS, /* well under the 5s watchdog */
+ };
+ 
+ char _license[] SEC("license") = "GPL";
+@@ -126,6 +134,17 @@ struct {
+ 	__type(value, struct cpu_ctx);
+ } cpu_ctx_stor SEC(".maps");
+ 
++/* pid (tgid) -> weight, pinned by name so bpftool can edit it while we run */
++struct {
++	__uint(type, BPF_MAP_TYPE_HASH);
++	__uint(max_entries, 1024);
++	__type(key, pid_t);
++	__type(value, u32);
++	__uint(pinning, LIBBPF_PIN_BY_NAME);
++} pid_weight SEC(".maps");
++
++u64 nr_pidw_hits;
++
+ /* Statistics */
+ u64 nr_enqueued, nr_dispatched, nr_reenqueued, nr_dequeued, nr_ddsp_from_enq;
+ u64 nr_core_sched_execed;
+@@ -159,6 +178,31 @@ static struct task_ctx *lookup_task_ctx(struct task_struct *p)
+ 	return tctx;
+ }
+ 
++/*
++ * Time slice for @p: slice_ns scaled by its pid_weight entry, or slice_ns
++ * unchanged if it has none. Keyed by tgid, the PID userspace sees, so every
++ * thread of a process shares its weight. Two always-runnable tasks taking
++ * turns on one CPU then split it in proportion to their weights.
++ */
++static u64 task_slice(struct task_struct *p)
++{
++	pid_t tgid = p->tgid;
++	u32 *w;
++	u64 slice;
++
++	w = bpf_map_lookup_elem(&pid_weight, &tgid);
++	if (!w)
++		return slice_ns;
++
++	__sync_fetch_and_add(&nr_pidw_hits, 1);
++	slice = slice_ns * *w / PIDW_DFL;
++	if (slice < PIDW_MIN_SLICE_NS)
++		return PIDW_MIN_SLICE_NS;
++	if (slice > PIDW_MAX_SLICE_NS)
++		return PIDW_MAX_SLICE_NS;
++	return slice;
++}
++
+ s32 BPF_STRUCT_OPS(qmap_select_cpu, struct task_struct *p,
+ 		   s32 prev_cpu, u64 wake_flags)
+ {
+@@ -231,7 +275,7 @@ void BPF_STRUCT_OPS(qmap_enqueue, struct task_struct *p, u64 enq_flags)
+ 	 */
+ 	if (tctx->force_local) {
+ 		tctx->force_local = false;
+-		scx_bpf_dsq_insert(p, SCX_DSQ_LOCAL, slice_ns, enq_flags);
++		scx_bpf_dsq_insert(p, SCX_DSQ_LOCAL, task_slice(p), enq_flags);
+ 		return;
+ 	}
+ 
+@@ -239,7 +283,7 @@ void BPF_STRUCT_OPS(qmap_enqueue, struct task_struct *p, u64 enq_flags)
+ 	if (!__COMPAT_is_enq_cpu_selected(enq_flags) &&
+ 	    (cpu = pick_direct_dispatch_cpu(p, scx_bpf_task_cpu(p))) >= 0) {
+ 		__sync_fetch_and_add(&nr_ddsp_from_enq, 1);
+-		scx_bpf_dsq_insert(p, SCX_DSQ_LOCAL_ON | cpu, slice_ns, enq_flags);
++		scx_bpf_dsq_insert(p, SCX_DSQ_LOCAL_ON | cpu, task_slice(p), enq_flags);
+ 		return;
+ 	}
+ 
+@@ -267,7 +311,7 @@ void BPF_STRUCT_OPS(qmap_enqueue, struct task_struct *p, u64 enq_flags)
+ 
+ 	/* Queue on the selected FIFO. If the FIFO overflows, punt to global. */
+ 	if (bpf_map_push_elem(ring, &pid, 0)) {
+-		scx_bpf_dsq_insert(p, SHARED_DSQ, slice_ns, enq_flags);
++		scx_bpf_dsq_insert(p, SHARED_DSQ, task_slice(p), enq_flags);
+ 		return;
+ 	}
+ 
+@@ -432,7 +476,7 @@ void BPF_STRUCT_OPS(qmap_dispatch, s32 cpu, struct task_struct *prev)
+ 			update_core_sched_head_seq(p);
+ 			__sync_fetch_and_add(&nr_dispatched, 1);
+ 
+-			scx_bpf_dsq_insert(p, SHARED_DSQ, slice_ns, 0);
++			scx_bpf_dsq_insert(p, SHARED_DSQ, task_slice(p), 0);
+ 			bpf_task_release(p);
+ 
+ 			batch--;
+diff --git a/tools/sched_ext/scx_qmap.c b/tools/sched_ext/scx_qmap.c
+index ef701d45..305e23f2 100644
+--- a/tools/sched_ext/scx_qmap.c
++++ b/tools/sched_ext/scx_qmap.c
+@@ -18,6 +18,7 @@ const char help_fmt[] =
+ "A simple five-level FIFO queue sched_ext scheduler.\n"
+ "\n"
+ "See the top-level comment in .bpf.c for more details.\n"
++"Per-PID weights (100 = default) go in the pinned map /sys/fs/bpf/pid_weight.\n"
+ "\n"
+ "Usage: %s [-s SLICE_US] [-e COUNT] [-t COUNT] [-T COUNT] [-l COUNT] [-b COUNT]\n"
+ "       [-P] [-M] [-d PID] [-D LEN] [-p] [-v]\n"
+@@ -121,16 +122,18 @@ int main(int argc, char **argv)
+ 
+ 	SCX_OPS_LOAD(skel, qmap_ops, scx_qmap, uei);
+ 	link = SCX_OPS_ATTACH(skel, qmap_ops, scx_qmap);
++	printf("pid_weight map pinned at %s\n", bpf_map__pin_path(skel->maps.pid_weight));
+ 
+ 	while (!exit_req && !UEI_EXITED(skel, uei)) {
+ 		long nr_enqueued = skel->bss->nr_enqueued;
+ 		long nr_dispatched = skel->bss->nr_dispatched;
+ 
+-		printf("stats  : enq=%lu dsp=%lu delta=%ld reenq=%"PRIu64" deq=%"PRIu64" core=%"PRIu64" enq_ddsp=%"PRIu64"\n",
++		printf("stats  : enq=%lu dsp=%lu delta=%ld reenq=%"PRIu64" deq=%"PRIu64" core=%"PRIu64" enq_ddsp=%"PRIu64" pidw=%"PRIu64"\n",
+ 		       nr_enqueued, nr_dispatched, nr_enqueued - nr_dispatched,
+ 		       skel->bss->nr_reenqueued, skel->bss->nr_dequeued,
+ 		       skel->bss->nr_core_sched_execed,
+-		       skel->bss->nr_ddsp_from_enq);
++		       skel->bss->nr_ddsp_from_enq,
++		       skel->bss->nr_pidw_hits);
+ 		printf("         exp_local=%"PRIu64" exp_remote=%"PRIu64" exp_timer=%"PRIu64" exp_lost=%"PRIu64"\n",
+ 		       skel->bss->nr_expedited_local,
+ 		       skel->bss->nr_expedited_remote,
+@@ -150,6 +153,8 @@ int main(int argc, char **argv)
+ 
+ 	bpf_link__destroy(link);
+ 	UEI_REPORT(skel, uei);
++	/* drop the pin so stale PID weights never carry over to the next run */
++	bpf_map__unpin(skel->maps.pid_weight, NULL);
+ 	scx_qmap__destroy(skel);
+ 	/*
+ 	 * scx_qmap implements ops.cpu_on/offline() and doesn't need to restart
