@@ -114,7 +114,13 @@ def _gone(pid: int, timeout: float = 3.0) -> bool:
     return not Path(f"/proc/{pid}").exists()
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="as root the harness does not go through sudo")
+needs_posix_sudo = pytest.mark.skipif(
+    not hasattr(os, "geteuid") or os.geteuid() == 0,
+    reason="needs POSIX non-root (live mode goes through sudo and os.killpg)",
+)
+
+
+@needs_posix_sudo
 def test_live_stops_root_tracee_through_sudo_and_every_workload_process(tmp_path, monkeypatch):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -157,7 +163,7 @@ def test_empty_comm_prefix_matches_nothing(log):
     assert sc.n_benign == 0
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="as root the harness does not go through sudo")
+@needs_posix_sudo
 def test_live_warns_when_a_workload_fails(tmp_path, monkeypatch, capsys):
     # A missing runtime makes run_benign.py exit 1 at once; say so, don't log n_benign=0 quietly.
     bin_dir = tmp_path / "bin"
