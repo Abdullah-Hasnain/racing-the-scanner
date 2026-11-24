@@ -95,7 +95,8 @@ def g4_policy_comparison() -> bool:
 
 
 def _group_legend(groups) -> list:
-    return [Patch(color=GROUP_COLORS[g], label=g) for g in GROUP_COLORS if g in set(groups)]
+    present = set(groups)
+    return [Patch(color=GROUP_COLORS[g], label=g) for g in GROUP_COLORS if g in present]
 
 
 def g3_attack_conditions() -> bool:
@@ -139,6 +140,54 @@ def g3_attack_conditions() -> bool:
     fig.tight_layout(rect=(0, 0, 1, 0.86))
     out = _save(fig, "G3_attack_conditions.png")
     print(f"[G3] wrote {out}")
+    return True
+
+
+LIVE_POLICIES = {"eevdf": "baseline", "cgroup_weight": "reservation", "sched_fifo": "reservation"}
+
+
+def live_g3_summary(df: pd.DataFrame) -> pd.DataFrame:
+    """Per condition and policy: median, min and max over reps of scans/s and catches/s."""
+    df = df.assign(catches_per_s=df["catches"] / df["seconds"])
+    g = df.groupby(["condition", "policy"])[["scans_per_s", "catches_per_s"]]
+    out = g.median()
+    for agg in ("min", "max"):
+        out = out.join(g.agg(agg).add_suffix(f"_{agg}"))
+    return out.reset_index()
+
+
+def g3_real_kernel() -> bool:
+    """G3, real kernel: scanner scans/s and catches/s per attack condition and CPU policy."""
+    src = RESULTS / "coupled_live.csv"
+    if not src.exists():
+        print("[G3-live] skip: needs coupled_live.csv from detection/coupled_live.py (root)")
+        return False
+    s = live_g3_summary(pd.read_csv(src))
+    conds = [c for c in G3_CONDITIONS if c in set(s["condition"])]
+    policies = [p for p in LIVE_POLICIES if p in set(s["policy"])]
+    colors = [GROUP_COLORS[LIVE_POLICIES[p]] for p in policies]
+    # Scans share one axis; catches do not, since a never-hiding attacker (none,
+    # starvation) is caught on every scan and would flatten the hiding panels.
+    fig, axes = plt.subplots(2, len(conds), figsize=(3.2 * len(conds), 6.5), squeeze=False)
+    for ax in axes[0][1:]:
+        ax.sharey(axes[0][0])
+    for row, (metric, label) in enumerate([("scans_per_s", "scans per second"),
+                                           ("catches_per_s", "catches per second")]):
+        for ax, cond in zip(axes[row], conds, strict=True):
+            r = s[s["condition"] == cond].set_index("policy").reindex(policies)
+            err = [(r[metric] - r[f"{metric}_min"]).fillna(0), (r[f"{metric}_max"] - r[metric]).fillna(0)]
+            ax.bar(range(len(policies)), r[metric].fillna(0), yerr=err, color=colors,
+                   edgecolor="white", error_kw={"lw": 1, "capsize": 3})
+            ax.set_xticks(range(len(policies)), policies if row else [], rotation=30, ha="right")
+            if row == 0:
+                ax.set_title(cond)
+        axes[row][0].set_ylabel(f"{label}\n(median, min-max bars)")
+    fig.legend(handles=_group_legend([LIVE_POLICIES[p] for p in policies]), loc="upper center",
+               bbox_to_anchor=(0.5, 0.93), ncol=2, fontsize=8, frameon=False)
+    fig.suptitle("G3 (real kernel): the scanner under a nice -20 attacker on one core", fontsize=11)
+    fig.tight_layout(rect=(0, 0, 1, 0.89))
+    out = _save(fig, "G3_real_kernel.png")
+    print(f"[G3-live] wrote {out}")
     return True
 
 
@@ -266,6 +315,7 @@ def main() -> int:
     _stub("G1", "memory/scanner (catch rate vs scan interval)")
     _stub("G2", "memory payloads (slowdown vs evasion Pareto)")
     g3_attack_conditions()
+    g3_real_kernel()
     g5_detection()
     g6_overhead()
     return 0

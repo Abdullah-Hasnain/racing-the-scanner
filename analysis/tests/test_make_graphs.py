@@ -130,3 +130,34 @@ def test_g6_sched_only_and_triage_only_and_both(dirs):
     assert _png(fig / "G6_overhead.png")
     _mimicry_csv(res)
     assert mg.g6_overhead() is True
+
+
+def _live_csv(res):
+    rows = []
+    for rep, (scans, catches) in enumerate([(200, 30), (240, 40), (220, 35)]):
+        for cond in ["none", "starvation", "hiding", "coupled"]:
+            for pol in ["eevdf", "cgroup_weight", "sched_fifo"]:
+                starved = pol == "eevdf" and cond in ("starvation", "coupled")
+                n = scans if starved else 540
+                rows.append(dict(rep=rep, condition=cond, policy=pol, seconds=20.0, scans=n,
+                                 catches=n if cond in ("none", "starvation") else catches,
+                                 scans_per_s=n / 20))
+    pd.DataFrame(rows).to_csv(res / "coupled_live.csv", index=False)
+
+
+def test_live_g3_summary_takes_median_and_range_over_reps(dirs):
+    res, _ = dirs
+    _live_csv(res)
+    s = mg.live_g3_summary(pd.read_csv(res / "coupled_live.csv")).set_index(["condition", "policy"])
+    row = s.loc[("coupled", "eevdf")]
+    assert (row["scans_per_s"], row["scans_per_s_min"], row["scans_per_s_max"]) == (11.0, 10.0, 12.0)
+    assert (row["catches_per_s"], row["catches_per_s_min"], row["catches_per_s_max"]) == (1.75, 1.5, 2.0)
+    assert s.loc[("coupled", "cgroup_weight"), "scans_per_s"] == 27.0
+
+
+def test_g3_real_kernel_writes_and_skips(dirs):
+    res, fig = dirs
+    assert mg.g3_real_kernel() is False
+    _live_csv(res)
+    assert mg.g3_real_kernel() is True
+    assert _png(fig / "G3_real_kernel.png")

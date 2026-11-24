@@ -17,6 +17,7 @@ is missing, so a partial `results/` still builds what it can.
 |---|---|---|
 | G1, G2 | memory module | still stubbed |
 | G3 `G3_attack_conditions.png` | `aggregate_g3.csv` | miss rate per condition (none, hiding, starvation, coupled) for baseline, iforest, rf, cgroup_weight, invariant; hatched bars are the mimicry attacker, bars show the median and the IQR |
+| G3 (real kernel) `G3_real_kernel.png` | `coupled_live.csv` from `detection/coupled_live.py` (root) | scanner scans/s and catches/s for the same four conditions on real Linux, under eevdf, cgroup_weight and sched_fifo; median over reps, min-max bars. Catches share no axis across conditions: a never-hiding attacker is caught on every scan |
 | G4 `G4_policy_comparison.png` | `aggregate_mimicry.csv` | p95 latency and miss rate for every policy, coloured by group |
 | G5 `G5_detection.png` | `detection_g5.csv` | catch rate vs false-alarm rate for Tracee default, custom, and custom + AI, pooled over runs (sum caught / sum n_attackers, sum false_alarms / sum n_benign). `ai` rows split by `triage_backend`: `llm:<model>` is "custom + AI (<model>)", `heuristic` is "custom + heuristic", and `llm-fallback:*` rows are excluded (printed as `[G5] excluded N llm-fallback rows`) |
 | G6 `G6_overhead.png` | `aggregate_mimicry.csv`, `detection_g5.csv` | G6a: real wall-clock ms the policy's decision code took, summed over a run; G6b: mean AI triage latency per process (ms) from the `llm:*` `ai` rows only (heuristic and llm-fallback rows are not AI overhead, and G6b is skipped with a printed reason if none exist) |
