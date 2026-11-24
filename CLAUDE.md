@@ -8,8 +8,9 @@ A controlled comparison of Linux scheduling frameworks against a combined
 memory-hiding and mimicry-starvation attack. A live RAM scanner only catches a
 hiding process during the few ms it exposes a page; the scheduler decides
 whether the scanner runs in time. We compare the stock scheduler (EEVDF), ~15
-ML-augmented schedulers, and a hard CPU-reservation invariant. See `README.md`
-and `docs/architecture.md`.
+ML-augmented schedulers, and a family of CPU reservations: a hard invariant plus
+the standard Linux primitives it turns out to match (cgroup `cpu.weight`,
+`cpu.max`, and `SCHED_DEADLINE`). See `README.md` and `docs/architecture.md`.
 
 ## Scope and safety
 
@@ -60,9 +61,16 @@ messages clean and plain.
 - Setup: `scripts/setup.sh` (or `scripts/setup.ps1` on Windows).
 - Smoke: `make sim`. Tests: `make test`.
 - Full sweep + figure: `scripts/run_demo.sh`.
-- Expected headline result: under mimicry all ~15 ML policies are evaded (the
-  disguised hog looks benign), while only the invariant keeps the monitor
-  scheduled. If a change breaks that, something is wrong.
+- Expected headline result: under mimicry all ~15 ML detection policies are
+  evaded (the disguised hog looks benign), while every CPU reservation keeps the
+  monitor scheduled without judging any process. The invariant is one such
+  reservation, not a unique mechanism: it is numerically identical to cgroup
+  `cpu.weight` and `SCHED_DEADLINE`, and a `cpu.max` cap on all tenants also
+  holds (at different costs: FIFO starves the system, weight/deadline/invariant
+  protect only the monitor, `cpu.max` contains the hog but is cap-sensitive; see
+  `docs/architecture.md`). The lesson is that detection loses to mimicry and a
+  reservation sidesteps it. If a change breaks the ML-evaded / reservation-holds
+  split, something is wrong.
 
 ## Constraints and gotchas
 
