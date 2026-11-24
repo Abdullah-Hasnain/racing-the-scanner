@@ -175,3 +175,35 @@ def test_live_warns_when_a_workload_fails(tmp_path, monkeypatch, capsys):
     harness.run_live(args, "t")
 
     assert f"{attacker} exited with code 3" in capsys.readouterr().err
+
+
+def _proc_ev(pid, ppid, comm, tid=None):
+    return json.dumps({"processId": pid, "threadId": tid or pid, "parentProcessId": ppid,
+                       "processName": comm, "eventName": "madvise", "args": []})
+
+
+def test_live_counts_only_what_the_harness_started():
+    # Live mode spawns the attacker (40) and run_benign.py (20) from the harness (10).
+    # Another python process on the host (30) and the harness itself must not count,
+    # and of run_benign's children only the named workload does, not `go build`.
+    lines = [
+        _proc_ev(10, 1, "python3"),            # the harness
+        _proc_ev(20, 10, "python"),            # run_benign.py
+        _proc_ev(21, 20, "go"),                # go build
+        _proc_ev(22, 21, "compile"),           # its compiler
+        _proc_ev(23, 20, "gcstress"),          # the workload
+        _proc_ev(23, 20, "GC worker", tid=24),
+        _proc_ev(30, 1, "python3"),            # unrelated
+        _proc_ev(40, 10, "v2"),
+    ]
+    assert harness.spawned_pids(lines, root=40, comms=["v2"]) == [40]
+    assert harness.spawned_pids(lines, root=20, comms=["gcstress"]) == [23]
+    assert harness.spawned_pids(lines, root=20, comms=["python"]) == [20]  # the --stub run
+    assert harness.spawned_pids(lines, root=20, comms=[]) == [20, 21, 22, 23]
+
+
+def test_java_compile_step_shares_the_workloads_name():
+    # run_benign compiles GcStress through `java -m jdk.compiler`, so the build JVM
+    # is also "java" and counts as a benign process beside the workload.
+    lines = [_proc_ev(20, 10, "python"), _proc_ev(21, 20, "java"), _proc_ev(22, 20, "java")]
+    assert harness.spawned_pids(lines, root=20, comms=["java"]) == [21, 22]
