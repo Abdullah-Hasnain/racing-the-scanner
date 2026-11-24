@@ -151,6 +151,15 @@ cannot name an event set (`event: default` is rejected as "not valid").
 jemalloc/SQLite) that trip false alarms, with a dependency-free `--stub` for
 pipeline testing.
 
+```bash
+python3 detection/benign/run_benign.py --workload {node,go-gc,java-gc,malloc,sqlite} [--seconds 30]
+python3 detection/benign/run_benign.py --stub
+```
+
+Compiled workloads are built first, so no compiler runs in the measured
+process. Tracee's `processName` for each is `node`, `gcstress`, `java` (plus JVM
+thread names such as `G1 Conc#0`), `malloc_churn`, and `python3` for `sqlite`.
+
 ## G5 harness
 
 `python -m detection.harness` scores three detectors on the same labelled
