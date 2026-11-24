@@ -4,7 +4,8 @@ This module imports torch at import time, so it is only imported lazily by the
 builder in ml.py. On a machine without torch the policy is skipped by the sweep
 runner. Install torch from requirements-gpu.txt to enable it.
 
-Interface matches the other unsupervised detectors: fit(X) / outlier_mask(X).
+Interface matches the other unsupervised detectors: fit(X) / outlier_score(X) /
+outlier_mask(X).
 """
 
 from __future__ import annotations
@@ -66,6 +67,9 @@ class TorchAutoencoderOutlier:
             opt.step()
         self.thr = float(np.quantile(self._recon_err(Xs), 1.0 - self.contam))
 
+    def outlier_score(self, X: np.ndarray) -> np.ndarray:
+        """Reconstruction error."""
+        return self._recon_err(self.scaler.transform(X).astype(np.float32))
+
     def outlier_mask(self, X: np.ndarray) -> np.ndarray:
-        Xs = self.scaler.transform(X).astype(np.float32)
-        return self._recon_err(Xs) > self.thr
+        return self.outlier_score(X) > self.thr

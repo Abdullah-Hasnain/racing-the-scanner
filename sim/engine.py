@@ -8,6 +8,11 @@ accumulates CPU until it completes a scan. We record the interval between scans
 (its scheduling latency) and whether each scan landed inside the attacker's
 exposure window.
 
+After the run, the policy's continuous score on every window it judged gives
+its detection ROC-AUC (sim/metrics.py). Those windows are held out from training
+by session: training uses its own processes, and the run's benign apps are new
+processes never seen in training.
+
 This is a model, not the kernel. It is the controlled instrument for the policy
 comparison; a subset of policies is validated on real sched_ext (see ROADMAP).
 """
@@ -20,6 +25,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from threadpoolctl import threadpool_limits
 
+from sim.metrics import detection_auc
 from sim.policies import build_policy
 from sim.policies.base import Policy
 from sim.process import (
@@ -62,6 +68,8 @@ class SimResult:
     monitor_share_mean: float
     overhead_ms: float
     condition: str = "coupled"
+    roc_auc: float = float("nan")          # attacker vs benign apps + monitor
+    roc_auc_benign: float = float("nan")   # attacker vs benign apps only
     extra: dict = field(default_factory=dict)
 
     def summary(self) -> dict:
@@ -77,6 +85,8 @@ class SimResult:
             "p99_latency": float(np.nanpercentile(lat, 99)),
             "miss_rate": float(np.nanmean(lat > window)),
             "detection_rate": float(np.nanmean(lat <= window)),
+            "roc_auc": self.roc_auc,
+            "roc_auc_benign": self.roc_auc_benign,
             "monitor_share": round(self.monitor_share_mean, 4),
             "overhead_ms": round(self.overhead_ms, 3),
             "n_scans": int(np.sum(~np.isnan(lat))),
@@ -160,10 +170,12 @@ def _run_once(policy: Policy, cfg: SimConfig) -> SimResult:
     last_scan = 0
     latencies: list[float] = []
     mon_shares: list[float] = []
+    obs_log: list[np.ndarray] = []
     overhead = 0.0
 
     for t in range(cfg.ticks):
         obs = np.array([p.observe(rng) for p in procs])
+        obs_log.append(obs)
         t0 = time.perf_counter()
         mult = policy.multipliers(procs, obs)
         overhead += time.perf_counter() - t0
@@ -179,6 +191,11 @@ def _run_once(policy: Policy, cfg: SimConfig) -> SimResult:
             last_scan = t
             acc -= cfg.scan_cost
 
+    # Score every window the scheduler judged, in one batch: outside the overhead
+    # timer and without touching rng, so the scheduling metrics are unaffected.
+    scores = policy.scores(procs * cfg.ticks, np.concatenate(obs_log))
+    roles = np.tile([p.role for p in procs], cfg.ticks)
+
     return SimResult(
         policy=policy.name,
         group=policy.group,
@@ -187,6 +204,8 @@ def _run_once(policy: Policy, cfg: SimConfig) -> SimResult:
         monitor_share_mean=float(np.mean(mon_shares)),
         overhead_ms=overhead * 1000.0,
         condition=cfg.condition,
+        roc_auc=detection_auc(scores, roles, versus=("benign", "monitor")),
+        roc_auc_benign=detection_auc(scores, roles, versus=("benign",)),
         extra={"exposure_window": window},
     )
 

@@ -47,6 +47,14 @@ class Policy(ABC):
         """
         ...
 
+    def scores(self, processes: list[Process], obs: np.ndarray) -> np.ndarray | None:
+        """Continuous suspicion per row of obs (higher = more hog-like), for ROC-AUC.
+
+        None means the policy has no detector (baseline, invariant), so its
+        detection AUC is undefined.
+        """
+        return None
+
 
 class BaselinePolicy(Policy):
     """S0: stock-scheduler control. No awareness, no protection."""

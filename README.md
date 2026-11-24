@@ -74,6 +74,10 @@ python analysis/make_graphs.py          # writes G1-G6 into figures/
 Add `--no-mimicry` for the naive-hog control, `--condition none|hiding|starvation`
 for one half of the attack, or `--g3` to sweep every condition in both modes into
 `results/aggregate_g3.csv` (see `docs/architecture.md`, "Attack conditions").
+Aggregates are medians across runs, with the interquartile range (`_q25`/`_q75`)
+for p95 latency, miss rate, and the detectors' ROC-AUC (`roc_auc` vs all
+legitimate processes, `roc_auc_benign` vs benign apps only; see "Detection
+ROC-AUC" in `docs/architecture.md`).
 
 ---
 
