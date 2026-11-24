@@ -92,3 +92,27 @@ def test_any_flip_to_or_from_prot_none_counts_as_hiding():
     ]
     f = features(lines)[7]
     assert (f["none_rw_flips"], f["rw_rx_flips"]) == (3, 0)
+
+
+def syscall_event(pid: int, name: str, **args) -> str:
+    return json.dumps({
+        "processId": pid,
+        "processName": "v2",
+        "eventName": name,
+        "args": [{"name": k, "value": v} for k, v in args.items()],
+    })
+
+
+def test_segv_handler_installs_and_signal_returns_are_counted():
+    # Tracee has no SIGSEGV-delivery event. A hider shows up as a process that
+    # installs a SIGSEGV handler and then returns from many signal handlers.
+    lines = [
+        syscall_event(7, "rt_sigaction", signum=11, act="0x7ffd0000", oldact="0x0"),
+        syscall_event(7, "rt_sigaction", signum=14, act="0x7ffd0000", oldact="0x0"),  # SIGALRM
+        syscall_event(7, "rt_sigaction", signum=11, act="0x0", oldact="0x7ffd0000"),  # query only
+        *[syscall_event(7, "rt_sigreturn") for _ in range(3)],
+    ]
+    f = features(lines)[7]
+    assert f["segv_handlers"] == 1
+    assert f["n_rt_sigreturn"] == 3
+    assert "sigsegv" not in f

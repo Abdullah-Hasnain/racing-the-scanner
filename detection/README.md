@@ -65,6 +65,19 @@ V2 made 200 faults and 200 re-locks, plus the initial whole-buffer lock: 401.
 `security_file_mprotect` fires once per `mprotect` call here, anonymous memory
 included. The stub's process name is `python`, not `python3`.
 
+## Signal features
+
+Tracee v0.24.1 has no event for a SIGSEGV being delivered. V2 shows up instead
+through two syscalls the policy watches:
+
+| feature | event | meaning |
+|---|---|---|
+| `segv_handlers` | `rt_sigaction` with signum 11 and a non-null `act` | the process installed a SIGSEGV handler |
+| `n_rt_sigreturn` | `rt_sigreturn` | signal handlers returned from |
+
+Go and Java install SIGSEGV handlers too, so `segv_handlers` alone is weak. The
+rate of `rt_sigreturn` alongside `none_rw_flips` is what marks V2.
+
 ## Running Tracee
 
 v0.24.1 runs on kernel 7.0. It needs real root: `perf_event_paranoid` is 4 on

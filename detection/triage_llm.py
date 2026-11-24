@@ -41,7 +41,10 @@ SYSTEM = (
     "- n_userfaultfd, n_memfd_secret: syscall counts. Benign JIT and GC apps do "
     "not use these; any count above 0 is suspicious.\n"
     "- n_mprotect, n_madvise: syscall counts, common in benign apps.\n"
-    "- sigsegv: not measured yet, always 0. Ignore it.\n"
+    "- segv_handlers: times the process installed a SIGSEGV handler. Runtimes "
+    "(Go, Java) install one too, so on its own it proves nothing.\n"
+    "- n_rt_sigreturn: signal handlers returned from. A hider that unlocks pages "
+    "from a SIGSEGV handler returns from one per page it touches.\n"
     "- threads, tracee_alerts: thread count and Tracee signature alerts.\n"
     "Answer with a JSON object: {\"verdict\": \"benign|suspicious\", \"reason\": \"...\"}."
 )

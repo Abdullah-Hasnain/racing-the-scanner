@@ -1,7 +1,7 @@
 """D3 (part 1): per-PID Tracee log aggregator.
 
 Reads Aqua Tracee JSON events (one JSON object per line) from a file or stdin and
-rolls them up into one feature record per PID per time window (default 1 s). The
+rolls them up into one feature record per process over the whole capture. The
 record is what the local-LLM triage layer (triage_llm.py) reviews to decide
 whether a burst of mprotect/madvise/userfaultfd/memfd_secret activity is a real
 hiding attempt or ordinary JIT/GC behavior.
@@ -10,7 +10,7 @@ This runs with no dependencies and works offline on a saved Tracee log, so it is
 developable without a live Tracee install.
 
 Usage:
-  tracee ... --output json | python aggregator.py --window 1.0
+  tracee ... --output json | python aggregator.py
   python aggregator.py --input tracee_events.json
 """
 
@@ -23,7 +23,8 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import IntFlag, StrEnum
 
-WATCHED = ("mprotect", "madvise", "userfaultfd", "memfd_secret")
+WATCHED = ("mprotect", "madvise", "userfaultfd", "memfd_secret", "rt_sigreturn")
+SIGSEGV = 11
 
 
 class Prot(IntFlag):
@@ -76,12 +77,12 @@ def _event_flip(event: dict) -> Flip | None:
 
 
 @dataclass
-class PidWindow:
+class ProcessFeatures:
     pid: int
     comm: str = ""
     syscalls: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     flips: dict[Flip, int] = field(default_factory=lambda: defaultdict(int))
-    sigsegv: int = 0
+    segv_handlers: int = 0  # rt_sigaction calls that install a SIGSEGV handler
     threads: int = 0
     alerts: int = 0
 
@@ -91,14 +92,25 @@ class PidWindow:
             "comm": self.comm,
             **{f"n_{k}": self.syscalls.get(k, 0) for k in WATCHED},
             **{f.value: self.flips.get(f, 0) for f in Flip},
-            "sigsegv": self.sigsegv,
+            "segv_handlers": self.segv_handlers,
             "threads": self.threads,
             "tracee_alerts": self.alerts,
         }
 
 
-def aggregate(lines) -> dict[int, PidWindow]:
-    windows: dict[int, PidWindow] = {}
+def _installs_segv_handler(event: dict) -> bool:
+    """True when an rt_sigaction call sets (not just queries) the SIGSEGV handler.
+
+    Tracee has no event for a SIGSEGV being delivered. A V2-style hider shows up
+    instead as a process that installs a SIGSEGV handler, then returns from many
+    signal handlers (n_rt_sigreturn).
+    """
+    args = {a.get("name"): a.get("value") for a in event.get("args", [])}
+    return args.get("signum") == SIGSEGV and args.get("act") not in (None, 0, "0", "0x0")
+
+
+def aggregate(lines) -> dict[int, ProcessFeatures]:
+    procs: dict[int, ProcessFeatures] = {}
     for line in lines:
         line = line.strip()
         if not line:
@@ -110,29 +122,27 @@ def aggregate(lines) -> dict[int, PidWindow]:
         pid = int(ev.get("processId", ev.get("pid", -1)))
         if pid < 0:
             continue
-        w = windows.setdefault(pid, PidWindow(pid=pid))
+        w = procs.setdefault(pid, ProcessFeatures(pid=pid))
         w.comm = ev.get("processName", w.comm)
         name = ev.get("eventName", "")
         if name in WATCHED:
             w.syscalls[name] += 1
         if name == "security_file_mprotect" and (flip := _event_flip(ev)):
             w.flips[flip] += 1
-        if name in ("sigsegv", "signal") and "SEGV" in json.dumps(ev):
-            w.sigsegv += 1
+        if name == "rt_sigaction" and _installs_segv_handler(ev):
+            w.segv_handlers += 1
         if ev.get("metadata", {}).get("Properties", {}).get("signatureName"):
             w.alerts += 1
-    return windows
+    return procs
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Tracee per-PID aggregator (D3)")
     ap.add_argument("--input", help="Tracee JSON file; omit to read stdin")
-    ap.add_argument("--window", type=float, default=1.0, help="(reserved) window seconds")
     args = ap.parse_args()
 
     src = open(args.input) if args.input else sys.stdin
-    windows = aggregate(src)
-    for w in windows.values():
+    for w in aggregate(src).values():
         print(json.dumps(w.as_features()))
     return 0
 
