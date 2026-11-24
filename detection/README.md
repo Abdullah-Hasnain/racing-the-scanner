@@ -49,6 +49,11 @@ Counts are per memory region (VMA), not per call: the kernel runs the LSM hook
 once for each VMA an mprotect call spans. V2 touches one page per call, so it is
 unaffected; a JIT protecting a range that spans several VMAs counts more than once.
 
+Two consequences for G5 and hand-written fixtures. Flips come only from
+`security_file_mprotect`, so a log without the raw `mprotect` syscall event has
+`n_mprotect` 0 beside nonzero flip counts. And a JIT that skips W^X and flips
+RW to RWX never loses write access, so it adds no `rw_rx_flips`.
+
 Tracee reports `prev_prot` as the region's raw vm_flags (for example `0x70` for a
 PROT_NONE region); only the R/W/X bits are read. With `parse-arguments`, a
 PROT_NONE region's `prev_prot` renders as `""`, not `"PROT_NONE"`. Both forms
@@ -65,30 +70,60 @@ V2 made 200 faults and 200 re-locks, plus the initial whole-buffer lock: 401.
 `security_file_mprotect` fires once per `mprotect` call here, anonymous memory
 included. The stub's process name is `python`, not `python3`.
 
+## Signal features
+
+Tracee (v0.23.2 and v0.24.1) has no event for a SIGSEGV being delivered, so the
+policy watches the handler being installed:
+
+| feature | event | meaning |
+|---|---|---|
+| `segv_handlers` | `rt_sigaction` with signum 11 and a non-null `act` | the process installed a SIGSEGV handler |
+
+Go and Java install SIGSEGV handlers too, so `segv_handlers` alone is weak. What
+marks V2 is the page its handler unlocks on each fault, which `none_rw_flips`
+and `relock_trips` already count.
+
+There is no `rt_sigreturn` feature because Tracee never emits that event, whatever
+the policy says. In its eBPF code (`pkg/ebpf/c/tracee.bpf.c`, the same in v0.23.2,
+v0.24.1 and main) `sys_enter` does not mark `rt_sigreturn` as in flight, so
+`sys_exit` drops it, and `sys_enter_submit` skips it by id. A live V2 run that
+handled 200 faults logged 0 `rt_sigreturn` events, and the G5 capture logged 0
+beside 3,396 `rt_sigaction` events.
+
 ## Running Tracee
 
-v0.24.1 runs on kernel 7.0. It needs real root: `perf_event_paranoid` is 4 on
-Ubuntu, so the `CAP_BPF` + `CAP_PERFMON` route does not apply. Run it from a
-real terminal, since `sudo` cannot prompt inside Claude Code's `!` commands.
+Use **v0.23.2**. v0.24.0 and v0.24.1 ship a signatures plugin that fails to load
+("plugin was built with a different version of package net"), so they run with
+no default signatures at all: `tracee list` shows an empty "Signature Events"
+section, and the G5 `default_sigs` detector would measure nothing. v0.23.2 loads
+65 signatures, 27 of them in the default set. Both versions report
+`security_file_mprotect` and `rt_sigaction` with the same fields.
+
+Tracee needs real root: `perf_event_paranoid` is 4 on Ubuntu, so the `CAP_BPF` +
+`CAP_PERFMON` route does not apply. Run it from an interactive terminal where
+`sudo` can prompt.
 
 ```bash
 mkdir -p ~/tracee/out && cd ~/tracee
-curl -fLO https://github.com/aquasecurity/tracee/releases/download/v0.24.1/tracee-x86_64.v0.24.1.tar.gz
-echo "8cc56bd8c8dd3efadb0441c84849592affc48a71d3afbe7751a9e2014ef9ec85  tracee-x86_64.v0.24.1.tar.gz" | sha256sum -c
-tar -xzf tracee-x86_64.v0.24.1.tar.gz && ./dist/tracee version
+curl -fLO https://github.com/aquasecurity/tracee/releases/download/v0.23.2/tracee-x86_64.v0.23.2.tar.gz
+echo "6a3f2cdc5023bc833d261cf4e3d84ff258b24a8b313f8f20438f0b04842060fa  tracee-x86_64.v0.23.2.tar.gz" | sha256sum -c
+mkdir -p v0.23.2 && tar -xzf tracee-x86_64.v0.23.2.tar.gz -C v0.23.2
+./v0.23.2/dist/tracee list --wide | grep -c "signatures, default"   # expect 27
 
 cd ~/racing-the-scanner
-sudo ~/tracee/dist/tracee --policy detection/tracee/memory-hiding.yaml \
+sudo ~/tracee/v0.23.2/dist/tracee \
+  --policy detection/tracee/memory-hiding.yaml \
+  --policy detection/tracee/default-signatures.yaml \
   --install-path /tmp/tracee-install \
   --output json:$HOME/tracee/out/events.json --output option:parse-arguments
 ```
 
+`default-signatures.yaml` lists the default set by name, because a policy rule
+cannot name an event set (`event: default` is rejected as "not valid").
+
 - `--install-path` must sit outside a private home directory (mode 750): Tracee
   drops root's file-permission override before it creates that directory.
-- The shipped checksum file names `./dist/...` and fails `sha256sum -c`; check
-  the hash inline as above.
-- "plugin was built with a different version of package net" for
-  `signatures/builtin.so` is logged as an error but is not fatal.
+- Check the hash inline as above; the shipped checksum file names `./dist/...`.
 - Once it goes quiet it is attached; events go to the file, not the terminal.
   With `scope: global` it writes about 1 MB/s. Stop it with Ctrl-C.
 - The output file is owned by root and world-readable.
@@ -156,6 +191,15 @@ divide V2's 100 ms period, so scans sample its whole cycle.
 `benign/run_benign.py` runs the legitimate workloads (Node.js, Go/Java GC,
 jemalloc/SQLite) that trip false alarms, with a dependency-free `--stub` for
 pipeline testing.
+
+```bash
+python3 detection/benign/run_benign.py --workload {node,go-gc,java-gc,malloc,sqlite} [--seconds 30]
+python3 detection/benign/run_benign.py --stub
+```
+
+Compiled workloads are built first, so no compiler runs in the measured
+process. Tracee's `processName` for each is `node`, `gcstress`, `java` (plus JVM
+thread names such as `G1 Conc#0`), `malloc_churn`, and `python3` for `sqlite`.
 
 ## First issues
 
