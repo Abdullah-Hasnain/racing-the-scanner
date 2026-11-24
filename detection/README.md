@@ -99,6 +99,15 @@ sudo ~/tracee/dist/tracee --policy detection/tracee/memory-hiding.yaml \
 jemalloc/SQLite) that trip false alarms, with a dependency-free `--stub` for
 pipeline testing.
 
+```bash
+python3 detection/benign/run_benign.py --workload {node,go-gc,java-gc,malloc,sqlite} [--seconds 30]
+python3 detection/benign/run_benign.py --stub
+```
+
+Compiled workloads are built first, so no compiler runs in the measured
+process. Tracee's `processName` for each is `node`, `gcstress`, `java` (plus JVM
+thread names such as `G1 Conc#0`), `malloc_churn`, and `python3` for `sqlite`.
+
 ## First issues
 
 - Build the end-to-end harness that runs an attacker + a benign app, captures
