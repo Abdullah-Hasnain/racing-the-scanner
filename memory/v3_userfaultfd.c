@@ -173,8 +173,21 @@ static void handle_worker_fault(uintptr_t addr, uint8_t *page, size_t idx) {
         if (errno == EEXIST) {
             (void)madvise(page, RTS_PAGE, MADV_DONTNEED);
             copy.copy = 0;
-            if (ioctl(g_uffd, UFFDIO_COPY, &copy) < 0 && errno == EEXIST)
+            if (ioctl(g_uffd, UFFDIO_COPY, &copy) < 0) {
+                /* Still could not resolve the fault: wake the worker so it
+                 * re-faults rather than blocking forever, and do not record a
+                 * served page. */
+                zero_buf_volatile(tmp, sizeof(tmp));
                 wake_range_helper(addr);
+                return;
+            }
+        } else {
+            /* Any non-EEXIST failure (e.g. EAGAIN) leaves the page missing.
+             * Wake the worker to retry instead of falling through and marking a
+             * page resident that was never copied in. */
+            zero_buf_volatile(tmp, sizeof(tmp));
+            wake_range_helper(addr);
+            return;
         }
     }
     zero_buf_volatile(tmp, sizeof(tmp));
@@ -552,8 +565,8 @@ int main(int argc, char **argv) {
 
     pthread_t th;
     int th_rc = pthread_create(&th, NULL, fault_thread, NULL);
-    pthread_sigmask(SIG_SETMASK, &old_mask, NULL);
     if (th_rc != 0) {
+        pthread_sigmask(SIG_SETMASK, &old_mask, NULL);
         fprintf(stderr, "[v3] pthread_create: %s\n", strerror(th_rc));
         (void)ioctl(g_uffd, UFFDIO_UNREGISTER, &reg.range);
         close(g_uffd);
@@ -564,12 +577,17 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    /* Install the stop handlers while SIGINT/SIGTERM are still blocked, then
+     * unblock, so there is no window where a signal takes the default action.
+     * The fault thread was created under the block and keeps it, so only the
+     * main worker services the stop. */
     struct sigaction sa_stop;
     memset(&sa_stop, 0, sizeof(sa_stop));
     sa_stop.sa_handler = stop_handler;
     sigemptyset(&sa_stop.sa_mask);
     sigaction(SIGINT, &sa_stop, NULL);
     sigaction(SIGTERM, &sa_stop, NULL);
+    pthread_sigmask(SIG_SETMASK, &old_mask, NULL);
 
     printf("[v3] pid=%d  dwell_ms=%.2f interval_ms=%.2f pattern=%s (buf=%p len=%zu). Ctrl-C to stop.\n",
            getpid(), dwell_ms, interval_ms, pattern_name(pat), (void *)g_buf, g_len);
@@ -594,6 +612,10 @@ int main(int argc, char **argv) {
         if (atomic_load_explicit(&g_decoy_active[page_idx], memory_order_acquire) != 0)
             (void)madvise(g_buf + off, RTS_PAGE, MADV_DONTNEED);
 
+        /* A zero first byte means the page is still a decoy zero-fill (or not yet
+         * faulted in), so drop it and re-read to force a real fault. This relies
+         * on RTS_MARKER (common/payload.h) having no 0x00 bytes, so real
+         * cleartext never starts a page with zero. */
         uint8_t val = vbuf[off];
         for (int attempt = 0; val == 0 && attempt < MAX_ZERO_RETRIES && !g_stop; attempt++) {
             (void)madvise(g_buf + off, RTS_PAGE, MADV_DONTNEED);
@@ -602,11 +624,17 @@ int main(int argc, char **argv) {
         if (val == 0 && g_stop)
             break;
 
+        /* Check two offsets, not just the first byte, so a partial de-XOR or a
+         * wrong-offset copy is caught rather than passing on a single byte. */
+        size_t off2 = off + RTS_PAGE / 2;
+        uint8_t val2 = vbuf[off2];
         uint8_t expected = (uint8_t)RTS_MARKER[off % mlen];
-        if (val != expected) {
+        uint8_t expected2 = (uint8_t)RTS_MARKER[off2 % mlen];
+        if (val != expected || val2 != expected2) {
             fprintf(stderr,
-                    "[v3] integrity mismatch at off=%zu: got=0x%02x expected=0x%02x\n",
-                    off, val, expected);
+                    "[v3] integrity mismatch: off=%zu got=0x%02x exp=0x%02x, "
+                    "off=%zu got=0x%02x exp=0x%02x\n",
+                    off, val, expected, off2, val2, expected2);
             status = 2;
             break;
         }
