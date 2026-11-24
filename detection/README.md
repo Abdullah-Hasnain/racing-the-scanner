@@ -99,6 +99,25 @@ sudo ~/tracee/dist/tracee --policy detection/tracee/memory-hiding.yaml \
 jemalloc/SQLite) that trip false alarms, with a dependency-free `--stub` for
 pipeline testing.
 
+## G5 capture
+
+`g5_capture.py` reproduces the G5 numbers. `capture` (root) starts Tracee
+v0.23.2 with both policies and runs 5 batches. Each batch runs the benign
+workloads for 40 s and, from +10 s, V2 (a different timing each batch), V3 and
+V4 for 20 s. It records every process per batch, then restores the userfaultfd
+sysctl. Workloads and attackers run as you, not root. `score` scores each batch
+once with the harness.
+
+```bash
+make -C memory
+pkexec "$PWD/.venv/bin/python" "$PWD/detection/g5_capture.py" capture --repo "$PWD"
+.venv/bin/python detection/g5_capture.py score results/g5/<run_id>
+```
+
+Needs node, go and java on PATH (see the benign suite) and Tracee v0.23.2 in
+`~/tracee/v0.23.2`. The Tracee log is about 2.5 GB for 5 batches and goes to
+`~/tracee/out/`, outside the repo.
+
 ## First issues
 
 - Build the end-to-end harness that runs an attacker + a benign app, captures
