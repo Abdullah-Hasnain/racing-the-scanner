@@ -36,7 +36,8 @@ transition. The `security_file_mprotect` LSM event has both `prot` and
 
 | feature | flip | typical of |
 |---|---|---|
-| `none_rw_flips` | to or from PROT_NONE, whatever the other side | V2-style hiding (unlock, re-lock) |
+| `none_rw_flips` | to or from PROT_NONE, whatever the other side | V2 hiding, but also runtime heap commits and guard pages |
+| `relock_trips` | a region (same `addr`, `len`) unlocked from PROT_NONE, then locked again | V2-style hiding (unlock, re-lock) |
 | `rw_rx_flips` | write access swapped for exec, or back (RW to RX, RX to RW), neither side PROT_NONE | a JIT (V8, the benign stub) |
 
 `none_rw_flips` counts any access on the other side (R, RW, RX, RWX), so a hider
@@ -49,8 +50,17 @@ What separates hiding is the round trip: V2 unlocks a page and later locks the
 same page again. `relock_trips` counts regions (same `addr` and `len`) unlocked
 from PROT_NONE and then locked again. On that capture V2 made 200, node and the
 JVM 0. The `custom` detector and the heuristic use `relock_trips`, not raw flips.
-A hider that relocks with a different `addr` or `len` than it unlocked with
-would not be counted.
+Limits of `relock_trips`:
+- A hider that relocks with a different `addr` or `len` than it unlocked with
+  (say, the whole buffer at once) is not counted, though raw flips would catch
+  it. Exact matching is deliberate: V8 unlocks pieces of a region and later
+  locks the whole region, and overlap matching would count that.
+- Tracee's stream is not strictly time-ordered across CPUs. A lock then unlock
+  of one region that arrives reversed reads as a trip; so can an address reused
+  after `munmap`, since the unlocked set is never cleared. Neither showed up on
+  the 30 held-out benign processes.
+- The benign runtimes measured are Node 22, JDK 25 and Go 1.26. Older JVMs flip
+  a safepoint polling page to PROT_NONE and back, a benign round trip.
 
 Counts are per memory region (VMA), not per call: the kernel runs the LSM hook
 once for each VMA an mprotect call spans. V2 touches one page per call, so it is
@@ -65,7 +75,7 @@ Checked on a real capture (Tracee v0.24.1, kernel 7.0, 10 s, policy as shipped):
 
 | process | Tracee events | aggregator |
 |---|---|---|
-| `v2 --dwell-ms 10 --interval-ms 50` | 200 unlocks `''` to `PROT_READ\|PROT_WRITE`, 201 locks back to `PROT_NONE` | `none_rw_flips` 401, `rw_rx_flips` 0 |
+| `v2 --dwell-ms 10 --interval-ms 50` | 200 unlocks `''` to `PROT_READ\|PROT_WRITE`, 201 locks back to `PROT_NONE` | `none_rw_flips` 401, `relock_trips` 200, `rw_rx_flips` 0 |
 | `run_benign.py --stub` | 9343 RW to RX and 9343 RX to RW, `prev_prot` carrying `PROT_SEM` (VM_SHARED) | `none_rw_flips` 0, `rw_rx_flips` 18686 |
 
 V2 made 200 faults and 200 re-locks, plus the initial whole-buffer lock: 401.
@@ -82,8 +92,8 @@ through two syscalls the policy watches:
 | `segv_handlers` | `rt_sigaction` with signum 11 and a non-null `act` | the process installed a SIGSEGV handler |
 | `n_rt_sigreturn` | `rt_sigreturn` | signal handlers returned from |
 
-Go and Java install SIGSEGV handlers too, so `segv_handlers` alone is weak. The
-rate of `rt_sigreturn` alongside `none_rw_flips` is what marks V2.
+Go and Java install SIGSEGV handlers too, so `segv_handlers` alone is weak. What
+marks V2 is `relock_trips`; `n_rt_sigreturn` tracks it, one per page V2 touches.
 
 ## Running Tracee
 
