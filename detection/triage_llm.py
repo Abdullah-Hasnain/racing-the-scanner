@@ -39,8 +39,8 @@ SYSTEM = (
 
 def _heuristic(rec: dict) -> dict:
     """Transparent fallback when no LLM is reachable."""
-    hiding = rec.get("prot_none_to_rw", 0) + rec.get("n_userfaultfd", 0) + rec.get("n_memfd_secret", 0)
-    jit = rec.get("rw_to_rx", 0)
+    hiding = rec.get("none_rw_flips", 0) + rec.get("n_userfaultfd", 0) + rec.get("n_memfd_secret", 0)
+    jit = rec.get("rw_rx_flips", 0)
     verdict = "suspicious" if hiding > jit and hiding > 0 else "benign"
     return {"verdict": verdict, "reason": "heuristic fallback (LLM unreachable)"}
 
