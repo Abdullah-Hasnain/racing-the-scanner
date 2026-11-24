@@ -30,6 +30,14 @@ Each prints its PID. Keep it running while you scan it.
 
 Flags: `--dwell-ms <ms>` (exposure window per page, min 0.1), `--interval-ms <ms>` (delay between touches, `0` for tight loop), `--pattern <seq|random|stride>`, `--duration <sec>` (`0` until Ctrl-C), and `--seed <u64>`.
 
+### V3 options
+
+```bash
+./bin/v3 --dwell-ms 10 --interval-ms 100 --pattern seq
+```
+
+Accepts the same flags as V2 (`--dwell-ms`, `--interval-ms`, `--pattern`, `--duration`, `--seed`). For live `/proc/<pid>/mem` scanner runs where dropped pages return zero-fill, ensure unprivileged userfaultfd can intercept remote faults (`sudo sysctl -w vm.unprivileged_userfaultfd=1` or `CAP_SYS_PTRACE`); otherwise V3 falls back to `UFFD_USER_MODE_ONLY` with a warning on `stderr`.
+
 ## Scan it
 
 ```bash
