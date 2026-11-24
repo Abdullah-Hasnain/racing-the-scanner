@@ -13,6 +13,11 @@ and prints a ranked table. analysis/make_graphs.py turns the CSVs into G1-G6.
 File names: the coupled attack (the default) writes aggregate_{mimicry,naive}.csv;
 another condition writes aggregate_<condition>_<mode>.csv; --g3 writes
 aggregate_g3.csv with `condition` and `mimicry` columns.
+
+Aggregates are medians across runs. p95_latency, miss_rate, roc_auc, and
+roc_auc_benign also get <metric>_q25 and <metric>_q75 (the interquartile range),
+printed as "median [q25, q75]". roc_auc is n/a (empty in the CSV) for policies
+without a detector and where there is no attacker.
 """
 
 from __future__ import annotations
@@ -25,6 +30,7 @@ from pathlib import Path
 import pandas as pd
 
 from sim.engine import CONDITIONS, SimConfig, run_policy
+from sim.metrics import aggregate
 from sim.policies import all_policies, expand
 
 
@@ -40,15 +46,23 @@ def _mode(mimicry: bool) -> str:
     return "mimicry" if mimicry else "naive"
 
 
+def _iqr(row: pd.Series, metric: str, spec: str) -> str:
+    """'median [q25, q75]' from an aggregate row; n/a when the metric is undefined."""
+    if pd.isna(row[metric]):
+        return "n/a"
+    return f"{row[metric]:{spec}} [{row[f'{metric}_q25']:{spec}}, {row[f'{metric}_q75']:{spec}}]"
+
+
 def _sweep(names: list[str], cfg: SimConfig, runs: int) -> list[dict]:
     per_run: list[dict] = []
     for name in names:
         try:
             rows = run_policy(name, cfg, runs=runs)
             per_run.extend(rows)
-            agg = pd.DataFrame(rows)[["p95_latency", "miss_rate", "overhead_ms"]].median()
-            print(f"  {name:<14} p95={agg.p95_latency:7.1f}  "
-                  f"miss={agg.miss_rate:5.2f}  overhead={agg.overhead_ms:6.2f}ms")
+            r = aggregate(pd.DataFrame(rows), ["policy"]).iloc[0]
+            print(f"  {name:<14} p95={_iqr(r, 'p95_latency', '.1f'):<20} "
+                  f"miss={_iqr(r, 'miss_rate', '.2f'):<19} "
+                  f"auc={_iqr(r, 'roc_auc', '.2f'):<19} overhead={r.overhead_ms:6.2f}ms")
         except Exception as exc:  # one bad policy must not kill the sweep
             print(f"  {name:<14} FAILED: {exc}")
     return per_run
@@ -66,17 +80,18 @@ def _g3(names: list[str], cfg: SimConfig, runs: int, out: Path) -> int:
         return 1
 
     df = pd.DataFrame(per_run)
-    num = df.select_dtypes("number").columns
-    agg = df.groupby(["condition", "mimicry", "policy", "group"], as_index=False, sort=False)[num].median()
+    agg = aggregate(df, ["condition", "mimicry", "policy", "group"])
     df.to_csv(out / "per_run_g3.csv", index=False)
     agg.to_csv(out / "aggregate_g3.csv", index=False)
 
-    table = (agg.assign(mode=agg["mimicry"].map(_mode))
-                .pivot(index="policy", columns=["condition", "mode"], values="miss_rate")
-                .reindex(index=list(dict.fromkeys(agg["policy"]))))
-    print("\n=== miss rate by condition and attacker mode (lower is better) ===")
-    with pd.option_context("display.width", 160, "display.max_rows", None):
-        print(table.round(2).to_string())
+    wide = agg.assign(mode=agg["mimicry"].map(_mode))
+    for metric, title in (("miss_rate", "miss rate (lower is better)"),
+                          ("roc_auc_benign", "detection ROC-AUC, attacker vs benign apps")):
+        table = (wide.pivot(index="policy", columns=["condition", "mode"], values=metric)
+                     .reindex(index=list(dict.fromkeys(agg["policy"]))))
+        print(f"\n=== median {title}, by condition and attacker mode ===")
+        with pd.option_context("display.width", 160, "display.max_rows", None):
+            print(table.round(2).to_string(na_rep="n/a"))
     print(f"\nwrote {out}/aggregate_g3.csv and per_run_g3.csv")
     return 0
 
@@ -121,20 +136,26 @@ def main() -> int:
         return 1
 
     df = pd.DataFrame(per_run)
-    num = df.select_dtypes("number").columns
-    agg = (df.groupby(["policy", "group"], as_index=False)[num].median()
-             .sort_values("p95_latency"))
+    agg = aggregate(df, ["policy", "group"]).sort_values("p95_latency", kind="stable")
 
     mode = _mode(cfg.mimicry)
     tag = mode if cfg.condition == "coupled" else f"{cfg.condition}_{mode}"
     df.to_csv(out / f"per_run_{tag}.csv", index=False)
     agg.to_csv(out / f"aggregate_{tag}.csv", index=False)
 
-    print("\n=== ranked by p95 monitor latency (lower is better) ===")
-    cols = ["policy", "group", "p50_latency", "p95_latency", "miss_rate",
-            "detection_rate", "monitor_share", "overhead_ms"]
-    with pd.option_context("display.width", 120, "display.max_rows", None):
-        print(agg[cols].to_string(index=False))
+    print("\n=== ranked by p95 monitor latency (lower is better); median [q25, q75] over runs ===")
+    table = pd.DataFrame({
+        "policy": agg["policy"],
+        "group": agg["group"],
+        "p95_latency": [_iqr(r, "p95_latency", ".1f") for _, r in agg.iterrows()],
+        "miss_rate": [_iqr(r, "miss_rate", ".2f") for _, r in agg.iterrows()],
+        "auc_vs_legit": [_iqr(r, "roc_auc", ".2f") for _, r in agg.iterrows()],
+        "auc_vs_benign": [_iqr(r, "roc_auc_benign", ".2f") for _, r in agg.iterrows()],
+        "monitor_share": agg["monitor_share"],
+        "overhead_ms": agg["overhead_ms"].round(1),
+    })
+    with pd.option_context("display.width", 160, "display.max_rows", None):
+        print(table.to_string(index=False))
     print(f"\nwrote {out}/aggregate_{tag}.csv and per_run_{tag}.csv")
     print(f"policies available: {len(all_policies())} "
           f"(baseline + {len(all_policies()) - 2} augmented + invariant)")

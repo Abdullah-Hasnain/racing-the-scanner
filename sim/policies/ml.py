@@ -17,6 +17,10 @@ The boost is a weight multiplier, not a reservation: a hog that is not demoted
 still outweighs the boosted monitor. Only the invariant (base.py) guarantees a
 share.
 
+Besides the multiplier, every policy exposes a continuous score per process
+(`scores`): the anomaly score for the unsupervised family, P(hog) for the
+supervised one. The engine uses it for detection ROC-AUC (sim/metrics.py).
+
 Every model here is pure scikit-learn (CPU, in requirements.txt) except the
 autoencoder, which is torch and optional (requires_torch=True).
 """
@@ -56,10 +60,17 @@ CONTAM = 0.01
 NORMAL, HOG, MONITOR = 0, 1, 2
 
 
-# ---- unsupervised detector wrappers (uniform: fit(X) / outlier_mask(X)) ------
+# ---- unsupervised detector wrappers ------------------------------------------
+#
+# Uniform interface: fit(X), outlier_score(X) (higher = more anomalous), and
+# outlier_mask(X) = outlier_score(X) > thr. The score is the detector's own
+# decision statistic, so its ROC-AUC rates exactly what the scheduler acts on.
 
 class PredictOutlier:
-    """For sklearn detectors whose predict() returns +1 inlier / -1 outlier."""
+    """For sklearn detectors whose decision_function() is negative for outliers
+    (the same rule their predict() applies)."""
+
+    thr = 0.0
 
     def __init__(self, make: Callable):
         self.make = make
@@ -70,8 +81,11 @@ class PredictOutlier:
         self.model = self.make()
         self.model.fit(self.scaler.fit_transform(X))
 
+    def outlier_score(self, X: np.ndarray) -> np.ndarray:
+        return -self.model.decision_function(self.scaler.transform(X))
+
     def outlier_mask(self, X: np.ndarray) -> np.ndarray:
-        return self.model.predict(self.scaler.transform(X)) == -1
+        return self.outlier_score(X) > self.thr
 
 
 class GmmOutlier:
@@ -91,10 +105,14 @@ class GmmOutlier:
     def fit(self, X: np.ndarray) -> None:
         Xs = self.scaler.fit_transform(X)
         self.gmm.fit(Xs)
-        self.thr = float(np.quantile(self.gmm.score_samples(Xs), self.contam))
+        self.thr = -float(np.quantile(self.gmm.score_samples(Xs), self.contam))
+
+    def outlier_score(self, X: np.ndarray) -> np.ndarray:
+        """Negative log-likelihood."""
+        return -self.gmm.score_samples(self.scaler.transform(X))
 
     def outlier_mask(self, X: np.ndarray) -> np.ndarray:
-        return self.gmm.score_samples(self.scaler.transform(X)) < self.thr
+        return self.outlier_score(X) > self.thr
 
 
 class KnnOutlier:
@@ -114,9 +132,12 @@ class KnnOutlier:
         kd = self.nn.kneighbors()[0][:, -1]
         self.thr = float(np.quantile(kd, 1.0 - self.contam))
 
+    def outlier_score(self, X: np.ndarray) -> np.ndarray:
+        """Distance to the k-th nearest training window."""
+        return self.nn.kneighbors(self.scaler.transform(X))[0][:, -1]
+
     def outlier_mask(self, X: np.ndarray) -> np.ndarray:
-        kd = self.nn.kneighbors(self.scaler.transform(X))[0][:, -1]
-        return kd > self.thr
+        return self.outlier_score(X) > self.thr
 
 
 class HbosOutlier:
@@ -146,8 +167,11 @@ class HbosOutlier:
             self.logdens.append(np.log(np.clip(hist, 1e-6, None)))
         self.thr = float(np.quantile(self._score(Xs), 1.0 - self.contam))
 
+    def outlier_score(self, X: np.ndarray) -> np.ndarray:
+        return self._score(self.scaler.transform(X))
+
     def outlier_mask(self, X: np.ndarray) -> np.ndarray:
-        return self._score(self.scaler.transform(X)) > self.thr
+        return self.outlier_score(X) > self.thr
 
 
 # ---- supervised classifier wrapper ------------------------------------------
@@ -164,6 +188,16 @@ class ClfWrap:
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         return self.clf.predict(self.scaler.transform(X))
+
+    def hog_score(self, X: np.ndarray) -> np.ndarray:
+        """P(hog). SVC has no probabilities without Platt scaling (extra internal
+        CV fits), so it gives its one-vs-rest decision value for the hog class;
+        ROC-AUC only needs the ranking."""
+        Xs = self.scaler.transform(X)
+        col = list(self.clf.classes_).index(HOG)
+        if hasattr(self.clf, "predict_proba"):
+            return self.clf.predict_proba(Xs)[:, col]
+        return self.clf.decision_function(Xs)[:, col]
 
 
 # ---- the policy that wraps any model ----------------------------------------
@@ -208,6 +242,11 @@ class MLPolicy(Policy):
             m[pred == HOG] = self.penalty
             m[pred == MONITOR] = self.boost
         return m
+
+    def scores(self, processes: list[Process], obs: np.ndarray) -> np.ndarray:
+        if self.kind == "unsupervised":
+            return self.model.outlier_score(obs)
+        return self.model.hog_score(obs)
 
 
 def _autoencoder_builder():

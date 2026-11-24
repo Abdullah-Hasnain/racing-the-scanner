@@ -85,9 +85,10 @@ the calibration. Unseen-app false positives (FP) below are from 12 validation
 seeds.
 
 **Unsupervised anomaly detectors** (trained on legit behavior only). Each of them
-demotes the naive hog on 100% of windows and the mimic on 0-1%: the mimic sits at
-the center of the benign population, which is the least anomalous place a
-process can be.
+demotes the naive hog on 100% of windows and the mimic only at its false-positive
+rate (per-run median 0-3%; single runs up to 14% for `lof` and 20% for `hbos`):
+the mimic sits at the center of the benign population, which is the least
+anomalous place a process can be.
 - `iforest`: Isolation Forest (random-partition ensemble). Keys on how few
   random splits isolate a window; 100 trees. FP 10%, monitor 3%. At the old
   contamination of 0.06 it punished the monitor 16% of the time, because a small,
@@ -193,3 +194,98 @@ trained detector and the mimic never appears in training. Expected shape: hiding
 alone is caught because the scanner runs on time, starvation alone is caught
 because nothing is hidden, and only the coupled attack beats an undefended or
 fooled scheduler.
+
+### Detection ROC-AUC (#8)
+
+The multiplier shows what a scheduler *did*; the ROC-AUC shows what its detector
+can *see*, independent of any threshold. Besides its multiplier, every ML policy
+exposes a continuous score per process (`Policy.scores`, higher = more
+hog-like):
+- unsupervised: the detector's own outlier statistic, the quantity its
+  `outlier_mask` thresholds. That is the negated `decision_function` for
+  `iforest`, `ocsvm`, `lof`, and `elliptic` (the same rule as their `predict`),
+  the k-th neighbor distance for `knn`, the HBOS score, the negative
+  log-likelihood for `gmm`, and the reconstruction error for `autoencoder`.
+- supervised: P(hog). `svm_rbf` gives its one-vs-rest decision value for the hog
+  class instead, since SVC has no probabilities without Platt scaling (extra
+  internal CV fits); ROC-AUC only needs the ranking.
+
+Baseline and invariant have no detector, so their AUC is empty (n/a).
+
+**Test set, and why it does not leak.** After each run the policy scores every
+window the scheduler judged during it, in one batch: in tick order, nothing
+shuffled or dropped, outside the overhead timer, and without drawing random
+numbers, so the scheduling metrics are bit-identical to before. These windows
+are held out from training by session, not by shuffling windows: training uses
+its own processes, the run's benign apps are new processes never seen in
+training, and the monitor's and attacker's windows are fresh draws.
+`test_auc_windows_are_held_out_by_session` checks all of this, and fails if a
+training app is reused or the windows are shuffled.
+
+The attacker's windows are the positives. There are two sets of negatives:
+- `roc_auc`: benign apps and the monitor (all legitimate processes).
+- `roc_auc_benign`: benign apps only. This isolates the mimicry question (can the
+  detector tell the attacker from the apps it imitates?) from the monitor, which
+  is easy to rank because its timing is far from any hog's.
+
+Both are empty where there is no attacker (`none`). Values are reported raw:
+below 0.5 means the detector scores the attacker as *more* normal than the
+negatives. They are never flipped to 1 - AUC.
+
+**Results** (default scenario, 20 runs; median, with the range over runs):
+
+| policies | naive hog, both columns | mimic, `roc_auc` | mimic, `roc_auc_benign` |
+|---|---|---|---|
+| 7 unsupervised | 1.00 (min 0.9996) | 0.15-0.35 | 0.18-0.34 |
+| `rf`, `knn_clf` | 1.00 | 0.50 | 0.50 |
+| `histgb`, `svm_rbf` | 1.00 | 0.24, 0.39 | 0.28, 0.29 |
+| `logreg`, `mlp`, `naive_bayes` | 1.00 | 0.64-0.68 (runs 0.26-0.945) | 0.55-0.61 (runs 0.07-0.93) |
+
+How to read the mimic column:
+- **Below chance is the finding.** The mimic sits at the exact center of benign
+  behavior, while every real app is offset from that center by its own jitter.
+  A detector that scores distance or density therefore finds the mimic more
+  normal than the apps it imitates. A defender cannot exploit this without
+  training on mimics, which would make the result tautological.
+- **`rf` and `knn_clf` give exactly 0.5.** All trees (or all 7 neighbors) vote
+  "normal" for both the mimic and the benign apps, so every pair ties.
+- **`logreg`, `mlp`, and `naive_bayes` rank the mimic above chance, but never act
+  on it.** Part of the lift is the monitor: it sits even further from the hog
+  class than the mimic, so `roc_auc` is 0.08-0.09 higher than `roc_auc_benign`.
+  The rest is a sub-threshold ranking against benign apps. Its sign depends on
+  which side of the mimic a run's 4 benign apps happen to fall, hence the wide
+  spread. The probabilities are far from any decision: `naive_bayes` gives the
+  mimic P(hog) of about 1e-216 against 1e-242 for benign apps, and `logreg`
+  2e-4 against 1e-4. No supervised policy demoted the mimic on any tick in any
+  run, which is why the monitor still misses 100% of scans.
+
+Across the G3 conditions, `starvation` matches `coupled` (same attacker). In
+`hiding` the attacker uses the mimic's benign-center timing in both modes, so its
+AUC equals the mimic's. The scheduler's detector cannot see a hider that does
+not hog; catching it is the scanner's job.
+
+The tests encode these results with caps taken from the 20-run spread
+(`sim/tests/test_metrics.py`):
+- naive hog: every policy >= 0.99 (observed minimum 0.9996);
+- mimic, family: the median `roc_auc_benign` across the ML policies is <= 0.5
+  (it ranged 0.14-0.41 per run);
+- mimic, each policy: both columns <= 0.95 (maximum over all 280 runs 0.945,
+  `naive_bayes`);
+- mimic, decisions: supervised policies demote it on 0% of ticks, unsupervised
+  ones on at most 25% (worst run 20.5%, `hbos`), against >= 99% for the naive
+  hog.
+
+### Spread across runs (#8)
+
+Every aggregate CSV (`aggregate_{mimicry,naive}.csv`, `aggregate_<condition>_<mode>.csv`,
+`aggregate_g3.csv`) holds the median across `--runs`. `p95_latency`, `miss_rate`,
+`roc_auc`, and `roc_auc_benign` also get `<metric>_q25` and `<metric>_q75`, the
+interquartile range across runs; `run_experiment` prints them as
+`median [q25, q75]`. The IQR describes run-to-run variation over seeds. It is not
+a confidence interval on the median.
+
+Under mimicry every ML policy's miss rate is median 1.0, IQR 1.0-1.0. A few
+single runs dip below that: `lof` in 4 of 20 runs (down to 0.85), and `hbos` and
+`knn` in one run each (0.78, 0.98). In those runs false positives happened to
+demote the mimic on some ticks. That is false-positive noise, not detection; see
+the demotion rates under "Unsupervised anomaly detectors" above.
