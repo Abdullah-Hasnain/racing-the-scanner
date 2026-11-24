@@ -89,16 +89,23 @@ included. The stub's process name is `python`, not `python3`.
 
 ## Signal features
 
-Tracee (v0.23.2 and v0.24.1) has no event for a SIGSEGV being delivered. V2 shows up instead
-through two syscalls the policy watches:
+Tracee (v0.23.2 and v0.24.1) has no event for a SIGSEGV being delivered, so the
+policy watches the handler being installed:
 
 | feature | event | meaning |
 |---|---|---|
 | `segv_handlers` | `rt_sigaction` with signum 11 and a non-null `act` | the process installed a SIGSEGV handler |
-| `n_rt_sigreturn` | `rt_sigreturn` | signal handlers returned from |
 
 Go and Java install SIGSEGV handlers too, so `segv_handlers` alone is weak. What
-marks V2 is `relock_trips`; `n_rt_sigreturn` tracks it, one per page V2 touches.
+marks V2 is the page its handler unlocks on each fault, which `none_rw_flips`
+and `relock_trips` already count.
+
+There is no `rt_sigreturn` feature because Tracee never emits that event, whatever
+the policy says. In its eBPF code (`pkg/ebpf/c/tracee.bpf.c`, the same in v0.23.2,
+v0.24.1 and main) `sys_enter` does not mark `rt_sigreturn` as in flight, so
+`sys_exit` drops it, and `sys_enter_submit` skips it by id. A live V2 run that
+handled 200 faults logged 0 `rt_sigreturn` events, and the G5 capture logged 0
+beside 3,396 `rt_sigaction` events.
 
 ## Running Tracee
 

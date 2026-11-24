@@ -104,16 +104,16 @@ def syscall_event(pid: int, name: str, **args) -> str:
     })
 
 
-def test_segv_handler_installs_and_signal_returns_are_counted():
+def test_segv_handler_installs_are_counted():
     lines = [
         syscall_event(7, "rt_sigaction", signum=11, act="0x7ffd0000", oldact="0x0"),
         syscall_event(7, "rt_sigaction", signum=14, act="0x7ffd0000", oldact="0x0"),  # SIGALRM
         syscall_event(7, "rt_sigaction", signum=11, act="0x0", oldact="0x7ffd0000"),  # query only
-        *[syscall_event(7, "rt_sigreturn") for _ in range(3)],
     ]
     f = features(lines)[7]
     assert f["segv_handlers"] == 1
-    assert f["n_rt_sigreturn"] == 3
+    # Tracee never emits rt_sigreturn, so a count of it would always read 0.
+    assert "n_rt_sigreturn" not in f
     assert "sigsegv" not in f
 
 

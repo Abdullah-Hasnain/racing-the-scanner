@@ -47,8 +47,6 @@ SYSTEM = (
     "- n_mprotect, n_madvise: syscall counts, common in benign apps.\n"
     "- segv_handlers: times the process installed a SIGSEGV handler. Runtimes "
     "(Go, Java) install one too, so on its own it proves nothing.\n"
-    "- n_rt_sigreturn: signal handlers returned from. A hider that unlocks pages "
-    "from a SIGSEGV handler returns from one per page it touches.\n"
     "- tracee_alerts: Tracee signature alerts that fired for the process.\n"
     "Answer with a JSON object: {\"verdict\": \"benign|suspicious\", \"reason\": \"...\"}."
 )
