@@ -97,6 +97,8 @@ class ProcessFeatures:
     relock_trips: int = 0  # regions unlocked from PROT_NONE, then locked again
     # working state, not a feature: (addr, len) regions unlocked and not yet relocked
     unlocked: set[tuple[int, int]] = field(default_factory=set, repr=False)
+    # working state: comm came from the main thread, so worker names no longer override it
+    named_by_main: bool = field(default=False, repr=False)
     alerts: int = 0
 
     def mprotect(self, event: dict) -> None:
@@ -158,7 +160,13 @@ def aggregate(lines) -> dict[int, ProcessFeatures]:
         if pid < 0:
             continue
         w = procs.setdefault(pid, ProcessFeatures(pid=pid))
-        w.comm = ev.get("processName", w.comm)
+        # Name the process after its main thread: workers carry their own names
+        # ("V8Worker", "C1 CompilerThre"), and exec renames the main thread, so
+        # its latest name wins. A process seen only through workers keeps theirs.
+        main_thread = int(ev.get("threadId", pid)) == pid
+        if main_thread or not w.named_by_main:
+            w.comm = ev.get("processName", w.comm)
+            w.named_by_main = w.named_by_main or main_thread
         name = ev.get("eventName", "")
         if name in WATCHED:
             w.syscalls[name] += 1
