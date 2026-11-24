@@ -93,6 +93,40 @@ sudo ~/tracee/dist/tracee --policy detection/tracee/memory-hiding.yaml \
   With `scope: global` it writes about 1 MB/s. Stop it with Ctrl-C.
 - The output file is owned by root and world-readable.
 
+## Coupled attack on the real kernel
+
+`coupled_live.py` runs the reservation half of the simulation's claim on real
+Linux (#15). V2 hides, the live RAM scanner scans it, and in the `coupled`
+condition 4 CPU hogs at nice -20 (the attacker claiming high priority, as in the
+simulation) compete for the same core. The hogs start after the scanner's first
+scan, since a monitor is already running when an attack begins. Policies:
+`eevdf` (stock, equal weights), `cgroup_weight` (the scanner alone in a cgroup
+with cpu.weight 10000 vs 100) and `sched_fifo` (the scanner at SCHED_FIFO 10).
+The ML policies exist only in the simulation. It needs root:
+
+```bash
+pkexec "$PWD/.venv/bin/python" "$PWD/detection/coupled_live.py" --repo "$PWD"
+```
+
+Kernel 7.0.0-44, Intel Core i7-14700F (bare metal), 3 reps of 20 s per cell, scanner sleeping 50 ms
+between scans, V2 at its defaults (10 ms dwell, 100 ms interval):
+
+| condition | policy | scans/s | scans that caught V2 |
+|---|---|---|---|
+| hiding | eevdf, cgroup_weight, sched_fifo | 19.7 to 19.8 | 47 to 54 |
+| coupled | eevdf | 5.8 to 6.9 | 17 to 21 |
+| coupled | cgroup_weight | 20.0 | 50 to 66 |
+| coupled | sched_fifo | 20.2 | 49 to 67 |
+
+Under stock EEVDF the coupled attack cuts the scanner's scans by about 70% and
+its catches by about 60%. Either reservation restores both, without judging any
+process. Scan time itself barely moves (p95 0.3 to 0.4 ms in every cell): the
+starvation shows up as the scanner waiting longer to run between scans.
+
+At equal nice the hogs do not starve the scanner at all (20 scans/s in a smoke
+run): it uses well under 1% of a core, and EEVDF already gives a light, mostly
+sleeping task that much. The attack needs the claimed priority.
+
 ## Benign suite
 
 `benign/run_benign.py` runs the legitimate workloads (Node.js, Go/Java GC,
