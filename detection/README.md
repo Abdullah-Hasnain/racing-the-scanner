@@ -42,8 +42,15 @@ transition. The `security_file_mprotect` LSM event has both `prot` and
 `none_rw_flips` counts any access on the other side (R, RW, RX, RWX), so a hider
 cannot dodge it by unlocking with exec or read-only access. The cost is overlap
 with benign apps: guard pages (Go, Java) and polling pages (older JVM safepoints)
-also flip to and from PROT_NONE. Measuring that overlap is G5's job, and the
-triage weighs the counts instead of treating one flip as a verdict.
+also flip to and from PROT_NONE. On the first G5 capture node made 158 and the
+JVM 1,413 such flips.
+
+What separates hiding is the round trip: V2 unlocks a page and later locks the
+same page again. `relock_trips` counts regions (same `addr` and `len`) unlocked
+from PROT_NONE and then locked again. On that capture V2 made 200, node and the
+JVM 0. The `custom` detector and the heuristic use `relock_trips`, not raw flips.
+A hider that relocks with a different `addr` or `len` than it unlocked with
+would not be counted.
 
 Counts are per memory region (VMA), not per call: the kernel runs the LSM hook
 once for each VMA an mprotect call spans. V2 touches one page per call, so it is
@@ -131,7 +138,7 @@ processes of one Tracee capture and appends one row per detector to
 | detector | fires when |
 | --- | --- |
 | `default_sigs` | Tracee's own signatures fired: `tracee_alerts` > 0 |
-| `custom` | raw custom-policy rule: `none_rw_flips` >= 1, `n_userfaultfd` >= 1 or `n_memfd_secret` >= 1 |
+| `custom` | custom-policy rule: `relock_trips` >= 1, `n_userfaultfd` >= 1 or `n_memfd_secret` >= 1 |
 | `ai` | triage verdict is "suspicious" (LLM, or the heuristic with `--no-llm`) |
 
 Only the `ai` row fills `triage_backend` and `triage_ms_mean` (mean wall-clock
