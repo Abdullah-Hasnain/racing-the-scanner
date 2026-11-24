@@ -20,3 +20,7 @@ spec:
     - event: madvise        # V3 MADV_DONTNEED, also GC (benign)
     - event: userfaultfd    # V3 fault-driven refill (rare in benign apps)
     - event: memfd_secret   # V4 hard bypass (the RAM scanner cannot see this)
+    - event: rt_sigaction   # a SIGSEGV handler being installed (V2 needs one)
+      filters:
+        - data.signum=11
+    - event: rt_sigreturn   # one per handled signal

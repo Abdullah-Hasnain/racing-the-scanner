@@ -37,10 +37,12 @@ def log():
     # security_file_mprotect is the event with prev_prot; Tracee's parse-arguments
     # renders a PROT_NONE region's prev_prot (vm_flags 0x70) as "".
     lsm = "security_file_mprotect"
-    hide = {"prev_prot": "", "prot": "PROT_READ|PROT_WRITE"}
+    page = {"addr": "0x7f0000001000", "len": 4096}
+    hide = {"prev_prot": "", "prot": "PROT_READ|PROT_WRITE", **page}  # unlock
+    relock = {"prev_prot": "PROT_READ|PROT_WRITE", "prot": "", **page}
     jit = {"prev_prot": "PROT_READ|PROT_WRITE", "prot": "PROT_READ|PROT_EXEC"}
     return [
-        *[_ev(100, "v2", lsm, **hide) for _ in range(5)],
+        *[e for _ in range(5) for e in (_ev(100, "v2", lsm, **hide), _ev(100, "v2", lsm, **relock))],
         _ev(101, "v3", "userfaultfd"),
         *[_ev(200, "node", lsm, **jit) for _ in range(5)],
         _ev(201, "python3", lsm, **jit),
