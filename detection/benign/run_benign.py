@@ -2,17 +2,30 @@
 
 Runs the legitimate memory-heavy workloads whose syscall patterns overlap with
 the attacker, so we can measure how often Tracee false-alarms on them and how
-much the AI triage cuts that.
+much the AI triage cuts that. Every workload runs for --seconds (default 30)
+and then exits 0.
 
-Real workloads (preferred, when the runtimes are installed):
-  - Node.js (V8 JIT): flips pages RW<->RX constantly.
-  - Go or Java (GC): PROT_NONE guard pages, MADV_DONTNEED.
-  - jemalloc / SQLite: MADV_DONTNEED on free.
+    python3 detection/benign/run_benign.py --workload NAME [--seconds N]
+    python3 detection/benign/run_benign.py --stub [--seconds N]
 
-If a runtime is missing, this prints the exact command to run it. It also ships
-a pure-Python stand-in (--stub) that exercises mmap + mprotect flips so the
-Tracee -> aggregator -> triage pipeline can be developed end to end without any
-external runtime.
+Workloads (expected memory syscalls in parentheses):
+  node     Node.js V8 JIT: compiles and runs many fresh functions
+           (mprotect RW<->RX flips on code pages, mmap/munmap).
+  go-gc    Go GC allocator loop, benign/gcstress.go (PROT_NONE arena
+           reservations, madvise MADV_DONTNEED / MADV_FREE on scavenge).
+  java-gc  JVM GC allocator loop, benign/GcStress.java, run as `java GcStress.java`
+           (mmap/munmap, mprotect guard pages, madvise on heap uncommit).
+  malloc   benign/malloc_churn.c, built on demand with gcc: allocate, touch and
+           free 32 MB, then malloc_trim (madvise MADV_DONTNEED), the way
+           jemalloc and SQLite free memory.
+  sqlite   Python's stdlib sqlite3 on a temp-file DB: insert/delete batches plus
+           VACUUM, with mmap I/O enabled (mmap/munmap/mremap, file I/O).
+           Needs no extra install.
+
+If a runtime is missing, this prints the Ubuntu install command and exits 1.
+--stub is a pure-Python stand-in (mmap + mprotect RW<->RX flips) so the
+Tracee -> aggregator -> triage pipeline can be developed with no external
+runtime.
 """
 
 from __future__ import annotations
@@ -20,13 +33,71 @@ from __future__ import annotations
 import argparse
 import ctypes
 import mmap
+import os
 import shutil
+import sqlite3
+import subprocess
+import tempfile
 import time
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+
+NODE_JS = (
+    "const end=Date.now()+%s*1000;"
+    "(function t(){if(Date.now()>=end)return;"
+    "for(let i=0;i<200;i++){const f=new Function('a','return a*'+i+'+1');"
+    "for(let j=0;j<500;j++)f(j)}"
+    "setTimeout(t,1)})()"
+)
+
+# workload -> (required binary, Ubuntu install command)
+REQUIRES = {
+    "node": ("node", "sudo apt install nodejs"),
+    "go-gc": ("go", "sudo apt install golang-go"),
+    "java-gc": ("java", "sudo apt install default-jre-headless"),
+    "malloc": ("gcc", "sudo apt install build-essential"),
+    "sqlite": (None, ""),
+}
+
+
+def run_malloc(seconds: float) -> int:
+    with tempfile.TemporaryDirectory() as tmp:
+        exe = os.path.join(tmp, "malloc_churn")
+        cc = subprocess.call(["gcc", "-O1", "-o", exe, str(HERE / "malloc_churn.c")])
+        if cc != 0:
+            return cc
+        return subprocess.call([exe, str(seconds)])
+
+
+def run_sqlite(seconds: float) -> int:
+    end = time.time() + seconds
+    rounds = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        db = sqlite3.connect(os.path.join(tmp, "churn.db"))
+        db.execute("PRAGMA mmap_size=67108864")
+        db.execute("CREATE TABLE t(id INTEGER PRIMARY KEY, pad BLOB)")
+        while time.time() < end:
+            with db:
+                db.executemany(
+                    "INSERT INTO t(pad) VALUES (?)", ((os.urandom(2048),) for _ in range(5000))
+                )
+                db.execute("DELETE FROM t WHERE id % 2 = 0")
+            db.execute("VACUUM")
+            rounds += 1
+        db.close()
+    print(f"[benign-sqlite] {rounds} rounds")
+    return 0
+
 
 WORKLOADS = {
-    "node": ["node", "-e", "setInterval(()=>{const f=new Function('return 1');f()},1)"],
-    "go-gc": ["go", "run", "./benign/gcstress.go"],   # add gcstress.go as an issue
-    "sqlite": ["sqlite3", ":memory:", "VACUUM;"],
+    "node": lambda s: subprocess.call(["node", "-e", NODE_JS % s]),
+    "go-gc": lambda s: subprocess.call(
+        ["go", "run", str(HERE / "gcstress.go"), "-seconds", str(s)]
+    ),
+    "java-gc": lambda s: subprocess.call(["java", str(HERE / "GcStress.java"), str(s)]),
+    "malloc": run_malloc,
+    "sqlite": run_sqlite,
 }
 
 
@@ -39,7 +110,7 @@ def run_stub(seconds: float) -> None:
     page = addr & ~(mmap.PAGESIZE - 1)
     PROT_RW = mmap.PROT_READ | mmap.PROT_WRITE
     PROT_RX = mmap.PROT_READ | mmap.PROT_EXEC
-    print("[benign-stub] flipping a page RW<->RX like a JIT. Ctrl-C to stop.")
+    print("[benign-stub] flipping a page RW<->RX like a JIT.")
     end = time.time() + seconds
     while time.time() < end:
         libc.mprotect(ctypes.c_void_p(page), mmap.PAGESIZE, PROT_RX)
@@ -59,13 +130,13 @@ def main() -> int:
         run_stub(args.seconds)
         return 0
 
-    cmd = WORKLOADS[args.workload]
-    if shutil.which(cmd[0]) is None:
-        print(f"[benign] '{cmd[0]}' not installed. Install it, or run with --stub.")
-        print("         command would be:", " ".join(cmd))
+    binary, install = REQUIRES[args.workload]
+    if binary and shutil.which(binary) is None:
+        print(f"[benign] '{binary}' not installed. Install it with:")
+        print(f"         {install}")
+        print("         or run with --stub.")
         return 1
-    import subprocess
-    return subprocess.call(cmd)
+    return WORKLOADS[args.workload](args.seconds)
 
 
 if __name__ == "__main__":
