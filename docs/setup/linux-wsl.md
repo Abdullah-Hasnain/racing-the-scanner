@@ -50,6 +50,10 @@ Tracee is set up.
 
 ## Installing scx (for the real-kernel validation, stretch)
 
-On Ubuntu 25.04+: `sudo apt install scx-scheds`, then `scx_simple` and check
-`cat /sys/kernel/sched_ext/state`. On Arch: the `scx-scheds` package. Loading a
-scheduler needs root.
+`scx` is not in the Ubuntu archive. On Ubuntu 26.04 use the PPA:
+`sudo add-apt-repository ppa:arighi/sched-ext && sudo apt install scx`. That
+package ships only the Rust schedulers and auto-starts `scx_cosmos` through
+`scx.service` (`sudo systemctl disable --now scx.service` to stop it).
+`scx_simple` is built from the kernel tree (`tools/sched_ext`). The full steps
+and the verified result are in `docs/kernel-spike.md`. On Arch: the
+`scx-scheds` package. Loading a scheduler needs root.

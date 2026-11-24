@@ -12,7 +12,8 @@ from detection.aggregator import aggregate
 VM_MAY = 0x70  # VM_MAYREAD | VM_MAYWRITE | VM_MAYEXEC, set on ordinary anonymous memory
 
 
-def mprotect_event(pid: int, prev_prot, prot, comm: str = "proc") -> str:
+def mprotect_event(pid: int, prev_prot, prot, comm: str = "proc", addr: str = "0x7f0000000000",
+                   length: int = 4096) -> str:
     return json.dumps({
         "processId": pid,
         "processName": comm,
@@ -22,8 +23,8 @@ def mprotect_event(pid: int, prev_prot, prot, comm: str = "proc") -> str:
             {"name": "prot", "value": prot},
             {"name": "ctime", "value": 0},
             {"name": "prev_prot", "value": prev_prot},
-            {"name": "addr", "value": "0x7f0000000000"},
-            {"name": "len", "value": 4096},
+            {"name": "addr", "value": addr},
+            {"name": "len", "value": length},
         ],
     })
 
@@ -92,3 +93,85 @@ def test_any_flip_to_or_from_prot_none_counts_as_hiding():
     ]
     f = features(lines)[7]
     assert (f["none_rw_flips"], f["rw_rx_flips"]) == (3, 0)
+
+
+def syscall_event(pid: int, name: str, **args) -> str:
+    return json.dumps({
+        "processId": pid,
+        "processName": "v2",
+        "eventName": name,
+        "args": [{"name": k, "value": v} for k, v in args.items()],
+    })
+
+
+def test_segv_handler_installs_are_counted():
+    lines = [
+        syscall_event(7, "rt_sigaction", signum=11, act="0x7ffd0000", oldact="0x0"),
+        syscall_event(7, "rt_sigaction", signum=14, act="0x7ffd0000", oldact="0x0"),  # SIGALRM
+        syscall_event(7, "rt_sigaction", signum=11, act="0x0", oldact="0x7ffd0000"),  # query only
+    ]
+    f = features(lines)[7]
+    assert f["segv_handlers"] == 1
+    # Tracee never emits rt_sigreturn, so a count of it would always read 0.
+    assert "n_rt_sigreturn" not in f
+    assert "sigsegv" not in f
+
+
+def test_relock_trips_count_pages_unlocked_then_locked_again():
+    # V2 exposes a page and hides it again; that round trip on one region is hiding.
+    page_a, page_b = "0x7f0000001000", "0x7f0000002000"
+    lines = [
+        mprotect_event(7, "PROT_READ|PROT_WRITE", "PROT_NONE", length=1 << 20),  # lock buffer
+        mprotect_event(7, "", "PROT_READ|PROT_WRITE", addr=page_a),  # unlock a
+        mprotect_event(7, "PROT_READ|PROT_WRITE", "PROT_NONE", addr=page_a),  # relock a
+        mprotect_event(7, "", "PROT_READ|PROT_WRITE", addr=page_b),  # unlock b
+        mprotect_event(7, "PROT_READ|PROT_WRITE", "PROT_NONE", addr=page_b),  # relock b
+        mprotect_event(7, "", "PROT_READ|PROT_WRITE", addr=page_a),  # unlock a, left open
+    ]
+    f = features(lines)[7]
+    assert f["relock_trips"] == 2
+    assert f["none_rw_flips"] == 6
+
+
+def test_runtime_commits_and_guard_pages_are_not_relock_trips():
+    # V8 and the JVM unlock heap once and set guard pages on other regions:
+    # flips to and from PROT_NONE, but no region is unlocked and then locked again.
+    lines = [
+        mprotect_event(9, "", "PROT_READ|PROT_WRITE", addr="0x7f0000010000", length=32768),
+        mprotect_event(9, "", "PROT_READ|PROT_WRITE", addr="0x7f0000020000", length=262144),
+        mprotect_event(9, "PROT_READ|PROT_WRITE", "PROT_NONE", addr="0x7f0000030000"),  # guard page
+        mprotect_event(9, "PROT_READ|PROT_WRITE", "PROT_NONE", addr="0x7f0000010000", length=4096),
+    ]
+    f = features(lines)[9]
+    assert f["relock_trips"] == 0
+    assert f["none_rw_flips"] == 4
+
+
+def test_hand_written_hex_and_spaced_prots_parse_like_tracee_output():
+    # Fixtures written by hand may quote raw vm_flags as hex, or space the flag names.
+    lines = [
+        mprotect_event(7, "0x70", "PROT_READ | PROT_WRITE"),  # unlock from PROT_NONE
+        mprotect_event(9, "0x73", "0x5"),                     # RW (with VM_MAY*) to RX
+    ]
+    f = features(lines)
+    assert (f[7]["none_rw_flips"], f[7]["rw_rx_flips"]) == (1, 0)
+    assert (f[9]["none_rw_flips"], f[9]["rw_rx_flips"]) == (0, 1)
+
+
+def named_event(pid: int, tid: int, comm: str) -> str:
+    return json.dumps({"processId": pid, "threadId": tid, "processName": comm,
+                       "eventName": "madvise", "args": []})
+
+
+def test_process_is_named_by_its_main_thread_not_its_workers():
+    # Real capture: run_benign.py's child is "python" until it execs node, and
+    # V8/JVM worker threads carry their own names ("V8Worker", "C1 CompilerThre").
+    lines = [
+        named_event(50, 50, "python"),
+        named_event(50, 50, "node"),
+        named_event(50, 51, "V8Worker"),
+        named_event(60, 61, "HeapHelper"),  # no main-thread event: keep what we saw
+    ]
+    f = features(lines)
+    assert f[50]["comm"] == "node"
+    assert f[60]["comm"] == "HeapHelper"
