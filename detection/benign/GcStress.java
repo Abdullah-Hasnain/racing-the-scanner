@@ -1,7 +1,7 @@
 import java.util.ArrayList;
 import java.util.List;
 
-/** GC-heavy allocator loop. Run: java GcStress.java [seconds] */
+/** GC-heavy allocator loop. Run: javac GcStress.java && java GcStress [seconds] */
 public class GcStress {
     public static void main(String[] args) {
         double seconds = args.length > 0 ? Double.parseDouble(args[0]) : 30;

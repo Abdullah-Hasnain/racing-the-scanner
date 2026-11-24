@@ -1,6 +1,6 @@
-// GC-heavy allocator loop. The Go runtime reserves arenas PROT_NONE and
-// returns memory with MADV_DONTNEED / MADV_FREE when the scavenger runs.
-// Usage: go run gcstress.go -seconds 30
+// GC-heavy allocator loop. The Go runtime returns memory with MADV_DONTNEED /
+// MADV_FREE when the scavenger runs.
+// Usage: go build -o gcstress gcstress.go && ./gcstress -seconds 30
 package main
 
 import (
@@ -19,7 +19,6 @@ func main() {
 	end := time.Now().Add(time.Duration(*seconds * float64(time.Second)))
 	rounds := 0
 	for time.Now().Before(end) {
-		sink = sink[:0]
 		for i := 0; i < 256; i++ {
 			b := make([]byte, 256<<10)
 			b[0] = byte(i)

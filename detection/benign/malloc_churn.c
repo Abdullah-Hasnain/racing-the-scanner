@@ -1,6 +1,7 @@
 /* Allocate, touch and free large blocks, then malloc_trim() so glibc hands
  * the pages back with madvise(MADV_DONTNEED), as jemalloc/SQLite do.
  * Usage: malloc_churn SECONDS */
+#define _GNU_SOURCE /* malloc_trim and CLOCK_MONOTONIC under -std=c11 */
 #include <malloc.h>
 #include <stdio.h>
 #include <stdlib.h>
