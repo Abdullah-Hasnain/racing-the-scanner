@@ -86,7 +86,7 @@ def test_triage_latency_is_mean_ms_over_labelled_records_only():
     calls = []
     ticks = iter(range(100))
 
-    def clock():  # each triage call spans two ticks of 10 ms
+    def clock():  # read before and after each call, 5 ms per read: each call spans 5 ms
         return next(ticks) * 0.005
 
     def triage(r):
@@ -142,6 +142,21 @@ def test_cli_writes_one_row_per_detector(log, tmp_path, monkeypatch, capsys):
     for d in ("default_sigs", "custom"):
         assert by[d]["triage_backend"] == "" and by[d]["triage_ms_mean"] == ""
     assert json.loads(capsys.readouterr().out.splitlines()[0])["detectors"]["ai"]["catch_rate"] == 1.0
+
+
+def test_cli_refuses_to_append_under_an_old_header(log, tmp_path, monkeypatch):
+    res = tmp_path / "res"
+    res.mkdir()
+    old = res / "detection_g5.csv"
+    old.write_text("run_id,mode,attacker,benign,n_attackers,n_benign,caught,false_alarms,"
+                   "catch_rate,fp_rate,triage_backend\n1,offline,v2,node,1,1,1,0,1,0,heuristic\n")
+    before = old.read_text()
+    monkeypatch.setenv("RTS_RESULTS_DIR", str(res))
+    p = tmp_path / "saved.json"
+    p.write_text("\n".join(log))
+    with pytest.raises(SystemExit, match="detection_g5.csv"):
+        harness.main(["--tracee-log", str(p), "--attacker-comm", "v2", "--no-llm"])
+    assert old.read_text() == before
 
 
 def test_fallback_is_read_from_source_not_reason():

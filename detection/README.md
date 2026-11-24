@@ -177,6 +177,12 @@ ms per triage call over the labelled records, for G6). If any record fell back
 to the heuristic the backend reads `llm-fallback:<model>` rather than
 `llm:<model>`. Detectors live in the `DETECTORS` table in `harness.py`.
 
+Score each capture once. `default_sigs` and `custom` don't depend on the
+triage backend, so scoring the same capture twice (say `--no-llm`, then with
+the LLM) appends duplicate rows for them, and G5 pools rows by summing. The
+harness refuses to append to a `detection_g5.csv` with an older column layout;
+move that file aside first.
+
 ## First issues
 
 - Build the end-to-end harness that runs an attacker + a benign app, captures

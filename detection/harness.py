@@ -107,7 +107,7 @@ AI = "ai"
 class Evaluation:
     scores: dict[str, Score]  # one per detector, over the same labelled records
     triage_ms_mean: float | None  # wall-clock ms per triage call, labelled records only
-    fell_back: bool  # triage used the heuristic for at least one record
+    fell_back: bool  # the LLM path fell back to the heuristic for a record; False under --no-llm
     triage_backend: str  # "heuristic", "llm:<model>" or "llm-fallback:<model>"
 
 
@@ -221,6 +221,14 @@ def write_rows(run_id: str, mode: str, attacker: str, benign: str, ev: Evaluatio
     d.mkdir(parents=True, exist_ok=True)
     path = d / CSV_NAME
     new = not path.exists()
+    if not new:
+        with path.open(newline="", encoding="utf-8") as f:
+            header = next(csv.reader(f), [])
+        if header != CSV_COLUMNS:
+            raise SystemExit(
+                f"error: {path} has an older column layout ({len(header)} columns, "
+                f"expected {len(CSV_COLUMNS)}). Move it aside or set RTS_RESULTS_DIR."
+            )
     with path.open("a", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         if new:
