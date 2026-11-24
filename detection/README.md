@@ -99,6 +99,23 @@ sudo ~/tracee/dist/tracee --policy detection/tracee/memory-hiding.yaml \
 jemalloc/SQLite) that trip false alarms, with a dependency-free `--stub` for
 pipeline testing.
 
+## G5 harness
+
+`python -m detection.harness` scores three detectors on the same labelled
+processes of one Tracee capture and appends one row per detector to
+`$RTS_RESULTS_DIR/detection_g5.csv`:
+
+| detector | fires when |
+| --- | --- |
+| `default_sigs` | Tracee's own signatures fired: `tracee_alerts` > 0 |
+| `custom` | raw custom-policy rule: `none_rw_flips` >= 1, `n_userfaultfd` >= 1 or `n_memfd_secret` >= 1 |
+| `ai` | triage verdict is "suspicious" (LLM, or the heuristic with `--no-llm`) |
+
+Only the `ai` row fills `triage_backend` and `triage_ms_mean` (mean wall-clock
+ms per triage call over the labelled records, for G6). If any record fell back
+to the heuristic the backend reads `llm-fallback:<model>` rather than
+`llm:<model>`. Detectors live in the `DETECTORS` table in `harness.py`.
+
 ## First issues
 
 - Build the end-to-end harness that runs an attacker + a benign app, captures
