@@ -78,7 +78,7 @@ def score(verdicts: Iterable[LabelledVerdict]) -> Score:
 
 
 def _matches(pid: int, comm: str, comms: Sequence[str], pids: Sequence[int]) -> bool:
-    return pid in pids or any(comm.startswith(c) for c in comms)
+    return pid in pids or any(c and comm.startswith(c) for c in comms)  # "" matches nothing
 
 
 def label_and_score(
@@ -147,7 +147,7 @@ def write_row(run_id: str, mode: str, attacker: str, benign: str, sc: Score, bac
     d.mkdir(parents=True, exist_ok=True)
     path = d / CSV_NAME
     new = not path.exists()
-    with path.open("a", newline="") as f:
+    with path.open("a", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         if new:
             w.writerow(CSV_COLUMNS)
@@ -224,7 +224,8 @@ def run_live(args: argparse.Namespace, run_id: str) -> Path:
 
     tr: subprocess.Popen | None = None
     workloads: list[subprocess.Popen] = []
-    with log_path.open("w") as out, open(d / f"tracee_{run_id}.stderr", "w") as err:
+    err_path = d / f"tracee_{run_id}.stderr"
+    with log_path.open("w", encoding="utf-8") as out, err_path.open("w", encoding="utf-8") as err:
         try:
             tr = subprocess.Popen(tracee_cmd, stdout=out, stderr=err)
             time.sleep(args.tracee_warmup)  # let Tracee attach before workloads start
@@ -233,6 +234,10 @@ def run_live(args: argparse.Namespace, run_id: str) -> Path:
             for cmd in ([args.attacker_bin], benign_cmd):  # each in its own process group
                 workloads.append(subprocess.Popen(cmd, start_new_session=True))
             time.sleep(args.seconds)
+            for cmd, p in zip(([args.attacker_bin], benign_cmd), workloads, strict=True):
+                if p.poll():  # exited early with an error: its counts will be missing
+                    print(f"warning: {' '.join(cmd)} exited with code {p.returncode}",
+                          file=sys.stderr)
         finally:
             for p in workloads:  # workloads first, Tracee last so it flushes
                 _stop_group(p)
@@ -265,8 +270,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = ap.parse_args(argv)
     if bool(args.tracee_log) == bool(args.live):
         ap.error("give exactly one of --tracee-log or --live")
-    if not (args.attacker_comm or args.attacker_pid):
-        ap.error("need --attacker-comm or --attacker-pid")
+    if not (args.attacker_comm or args.attacker_pid or args.benign_comm or args.benign_pid):
+        ap.error("need an --attacker-* or --benign-* selector")
     run_id = args.run_id or uuid.uuid4().hex[:8]
 
     if args.live:
@@ -274,7 +279,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         mode = "live"
     else:
         log_path, mode = Path(args.tracee_log), "offline"
-    with log_path.open() as f:
+    with log_path.open(encoding="utf-8") as f:
         sc, backend = run_offline(
             f, args.no_llm, args.attacker_comm, args.benign_comm,
             args.attacker_pid, args.benign_pid,
