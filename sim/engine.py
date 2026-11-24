@@ -1,11 +1,12 @@
 """The scheduling simulation.
 
-One run places a monitor, several benign apps, and one attacker on a simulated
-CPU. Each tick the active policy sets priority multipliers from observed
-behavior, the scheduler allocates CPU shares (honoring the invariant floor if
-the policy enforces one), and the monitor accumulates CPU until it completes a
-scan. We record the interval between scans (its scheduling latency) and whether
-each scan landed inside the attacker's exposure window.
+One run places a monitor, several benign apps, and (in every condition but
+"none") one attacker on a simulated CPU. Each tick the active policy sets
+priority multipliers from observed behavior, the scheduler allocates CPU shares
+(honoring the invariant floor if the policy enforces one), and the monitor
+accumulates CPU until it completes a scan. We record the interval between scans
+(its scheduling latency) and whether each scan landed inside the attacker's
+exposure window.
 
 This is a model, not the kernel. It is the controlled instrument for the policy
 comparison; a subset of policies is validated on real sched_ext (see ROADMAP).
@@ -29,6 +30,15 @@ from sim.process import (
 
 NORMAL, HOG, MONITOR = 0, 1, 2
 
+# Attack conditions (the G3 comparison). The attacker can hide its pages (a scan
+# catches it only within exposure_window ticks), starve the monitor of CPU, or both.
+#   none        no attacker; the window still measures the monitor's timeliness
+#   hiding      hides, but takes only a benign app's share
+#   starvation  hogs the CPU but never hides, so every completed scan catches it
+#   coupled     hides and hogs: the full attack (default)
+# `mimicry` only matters where the attacker hogs (starvation, coupled).
+CONDITIONS = ("none", "hiding", "starvation", "coupled")
+
 
 @dataclass
 class SimConfig:
@@ -38,6 +48,7 @@ class SimConfig:
     exposure_window: int = 8      # a scan "catches" the payload if latency <= this
     floor_share: float = 0.20     # invariant minimum monitor share
     mimicry: bool = True          # attacker imitates benign timing
+    condition: str = "coupled"    # one of CONDITIONS
     train_samples: int = 300
     seed: int = 42
 
@@ -50,6 +61,7 @@ class SimResult:
     scan_latencies: list[float]
     monitor_share_mean: float
     overhead_ms: float
+    condition: str = "coupled"
     extra: dict = field(default_factory=dict)
 
     def summary(self) -> dict:
@@ -58,6 +70,7 @@ class SimResult:
         return {
             "policy": self.policy,
             "group": self.group,
+            "condition": self.condition,
             "mimicry": self.mimicry,
             "p50_latency": float(np.nanpercentile(lat, 50)),
             "p95_latency": float(np.nanpercentile(lat, 95)),
@@ -75,6 +88,8 @@ def _build_training(cfg: SimConfig, rng: np.random.Generator):
 
     The real attacker (mimicry) is never in the training set, so results are not
     tautological: the detectors are trained blind to the attack they must stop.
+    Nothing here depends on cfg.mimicry or cfg.condition, so every attack
+    condition is scored by the same trained detector.
     """
     monitor = monitor_profile(0)
     benign = [benign_profile(100 + i, rng) for i in range(cfg.n_benign)]
@@ -120,6 +135,8 @@ def run_once(policy: Policy, cfg: SimConfig) -> SimResult:
 
 
 def _run_once(policy: Policy, cfg: SimConfig) -> SimResult:
+    if cfg.condition not in CONDITIONS:
+        raise ValueError(f"unknown condition '{cfg.condition}'. Known: {', '.join(CONDITIONS)}")
     rng = np.random.default_rng(cfg.seed)
     legit_X, sup_X, sup_y = _build_training(cfg, rng)
 
@@ -131,8 +148,12 @@ def _run_once(policy: Policy, cfg: SimConfig) -> SimResult:
 
     monitor = monitor_profile(0)
     benign = [benign_profile(100 + i, rng) for i in range(cfg.n_benign)]
-    attacker = attacker_profile(999, cfg.mimicry)
-    procs = [monitor, *benign, attacker]
+    procs = [monitor, *benign]
+    if cfg.condition != "none":
+        starve = cfg.condition in ("starvation", "coupled")
+        procs.append(attacker_profile(999, cfg.mimicry, starve=starve))
+    # An attacker that does not hide is always exposed: any completed scan catches it.
+    window = float("inf") if cfg.condition == "starvation" else cfg.exposure_window
     base_eff = np.array([p.claimed_priority * p.demand for p in procs])
 
     acc = 0.0
@@ -165,7 +186,8 @@ def _run_once(policy: Policy, cfg: SimConfig) -> SimResult:
         scan_latencies=latencies,
         monitor_share_mean=float(np.mean(mon_shares)),
         overhead_ms=overhead * 1000.0,
-        extra={"exposure_window": cfg.exposure_window},
+        condition=cfg.condition,
+        extra={"exposure_window": window},
     )
 
 

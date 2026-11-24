@@ -60,14 +60,20 @@ def _vec(burst_mean, burst_std, sleep_mean, sleep_std, wake_rate, ctxsw_rate):
 
 
 def monitor_profile(pid: int) -> Process:
-    """A latency-sensitive security monitor: short periodic bursts, regular sleeps."""
+    """A latency-sensitive security monitor: short periodic bursts, regular sleeps.
+
+    demand 0.5 (a benign app's weight) lets the monitor meet the exposure window
+    under the benign load alone (#7). At 0.25 it starved with no attacker at all,
+    so no scheduler could protect it whatever its detector did. Demand is not an
+    observed feature, so the detector calibration from #6 is unaffected.
+    """
     return Process(
         pid=pid,
         role="monitor",
         timing=_vec(2.0, 0.3, 8.0, 0.5, 5.0, 4.0),
         noise=_vec(0.2, 0.05, 0.4, 0.1, 0.3, 0.3),
         claimed_priority=1.0,
-        demand=0.25,
+        demand=0.5,
         label=0,
     )
 
@@ -86,13 +92,26 @@ def benign_profile(pid: int, rng: np.random.Generator) -> Process:
     )
 
 
-def attacker_profile(pid: int, mimicry: bool) -> Process:
-    """The CPU hog.
+def attacker_profile(pid: int, mimicry: bool, starve: bool = True) -> Process:
+    """The attacker process.
 
-    naive  : long bursts, little sleep -> obviously anomalous timing.
-    mimicry: timing shaped to sit inside the benign distribution, yet it still
-             claims a high priority and high demand, so it keeps starving others.
+    starve=True, the CPU hog:
+      naive  : long bursts, little sleep -> obviously anomalous timing.
+      mimicry: timing shaped to sit inside the benign distribution, yet it still
+               claims a high priority and high demand, so it keeps starving others.
+    starve=False, the hiding payload alone: benign timing and a benign app's
+      share. With nothing to disguise, `mimicry` has no effect.
     """
+    if not starve:
+        return Process(
+            pid=pid,
+            role="attacker",
+            timing=_vec(3.0, 0.6, 6.0, 0.8, 4.0, 3.0),
+            noise=_vec(0.3, 0.08, 0.5, 0.12, 0.3, 0.3),
+            claimed_priority=1.0,
+            demand=0.5,
+            label=0,
+        )
     if mimicry:
         timing = _vec(3.0, 0.6, 6.0, 0.8, 4.0, 3.0)   # looks benign
     else:

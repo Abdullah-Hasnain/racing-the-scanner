@@ -226,6 +226,10 @@ def calibrate(name: str, grid: Grid, folds: list[Fold]) -> list[Row]:
 def check_registry(name: str, folds: list[Fold]) -> dict[str, float]:
     """Held-out decision rates of the policy exactly as sim/policies/ml.py builds it."""
     policy = build_policy(name)
+    # Each window goes in with the process that produced it: the unsupervised
+    # family boosts the monitor by role, so the policy must see roles.
+    monitor, hog = monitor_profile(0), attacker_profile(999, mimicry=False)
+    app = benign_profile(500, np.random.default_rng(0))
     rates: dict[str, list[float]] = {"hog_demoted": [], "monitor_demoted": [],
                                      "unseen_benign_demoted": [], "monitor_boosted": []}
     for f in folds:
@@ -234,13 +238,13 @@ def check_registry(name: str, folds: list[Fold]) -> dict[str, float]:
         else:
             policy.fit(f.legit_X)
 
-        def mult(X):
-            return policy.multipliers([None] * len(X), X)
+        def mult(X, proc):
+            return policy.multipliers([proc] * len(X), X)
 
-        rates["hog_demoted"].append((mult(f.hog) < 1).mean())
-        rates["monitor_demoted"].append((mult(f.monitor) < 1).mean())
-        rates["unseen_benign_demoted"].append((mult(f.benign) < 1).mean())
-        rates["monitor_boosted"].append((mult(f.monitor) > 1).mean())
+        rates["hog_demoted"].append((mult(f.hog, hog) < 1).mean())
+        rates["monitor_demoted"].append((mult(f.monitor, monitor) < 1).mean())
+        rates["unseen_benign_demoted"].append((mult(f.benign, app) < 1).mean())
+        rates["monitor_boosted"].append((mult(f.monitor, monitor) > 1).mean())
     return {k: float(np.mean(v)) for k, v in rates.items()}
 
 

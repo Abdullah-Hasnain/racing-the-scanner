@@ -4,12 +4,18 @@ They all share one harness: each takes the same observed feature windows and
 returns a priority multiplier per process. Swapping the model is a one-line
 change, which is exactly why a 15-model sweep is feasible for a small team.
 
-Two families:
+Two families, one response (demote a suspected hog, boost the monitor):
 - unsupervised anomaly detectors: trained on legitimate behavior only (benign
   apps + the monitor), they penalize processes whose timing looks anomalous.
+  They cannot recognize the monitor, so they boost it by role, and only while
+  its own timing passes as normal: a flagged monitor is demoted like anyone else.
   A mimicry attacker sits inside the benign distribution and is not penalized.
 - supervised classifiers: trained to label {normal, hog, monitor}, they demote
   hogs and boost the monitor. Mimicry makes the hog classify as normal.
+
+The boost is a weight multiplier, not a reservation: a hog that is not demoted
+still outweighs the boosted monitor. Only the invariant (base.py) guarantees a
+share.
 
 Every model here is pure scikit-learn (CPU, in requirements.txt) except the
 autoencoder, which is torch and optional (requires_torch=True).
@@ -194,6 +200,8 @@ class MLPolicy(Policy):
     def multipliers(self, processes: list[Process], obs: np.ndarray) -> np.ndarray:
         m = np.ones(len(processes), dtype=float)
         if self.kind == "unsupervised":
+            # Boost by role, then demote outliers: a flagged monitor loses its boost.
+            m[[p.role == "monitor" for p in processes]] = self.boost
             m[self.model.outlier_mask(obs)] = self.penalty
         else:
             pred = self.model.predict(obs)

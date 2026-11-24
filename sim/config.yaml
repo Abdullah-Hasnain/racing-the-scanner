@@ -7,6 +7,7 @@ scan_cost: 1.0         # CPU units the monitor must accumulate to complete one s
 exposure_window: 8     # a scan catches the payload only if its latency <= this
 floor_share: 0.20      # invariant: guaranteed minimum CPU share for the monitor
 mimicry: true          # attacker imitates benign timing (set false for the naive hog)
+condition: coupled     # none | hiding | starvation | coupled (see sim/engine.py, G3)
 train_samples: 300     # observation windows per process used to train detectors
 seed: 42
 runs: 20               # repeats per policy (report median + spread)
