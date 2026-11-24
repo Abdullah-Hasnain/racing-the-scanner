@@ -15,5 +15,5 @@ select = ["E", "F", "W", "I", "UP", "B"]
 ignore = ["E501"]  # line length is handled by the formatter, not enforced hard
 
 [tool.pytest.ini_options]
-testpaths = ["sim/tests"]
+testpaths = ["sim/tests", "detection/tests"]
 addopts = "-q"

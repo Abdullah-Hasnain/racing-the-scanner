@@ -21,8 +21,58 @@ import json
 import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
+from enum import IntFlag, StrEnum
 
 WATCHED = ("mprotect", "madvise", "userfaultfd", "memfd_secret")
+
+
+class Prot(IntFlag):
+    """The access bits of a memory protection. No bits set is PROT_NONE."""
+
+    R = 1
+    W = 2
+    X = 4
+
+
+class Flip(StrEnum):
+    """A protection change worth counting, valued by its feature name."""
+
+    NONE_RW = "none_rw_flips"  # to or from PROT_NONE: V2-style lock and unlock
+    RW_RX = "rw_rx_flips"      # write access swapped for exec, or back: a JIT
+
+
+_ACCESS = Prot.R | Prot.W | Prot.X
+_PROT_NAMES = {"PROT_READ": Prot.R, "PROT_WRITE": Prot.W, "PROT_EXEC": Prot.X}
+
+
+def _parse_prot(value: int | str) -> Prot:
+    """Tracee's prot or prev_prot, raw or parsed, as access bits.
+
+    Raw prev_prot is the region's vm_flags, which carries bits above R/W/X
+    (VM_MAYREAD and friends); they are dropped. With parse-arguments on, Tracee
+    names only the PROT_* bits, so a PROT_NONE region renders as "".
+    """
+    if isinstance(value, str):
+        return Prot(sum(_PROT_NAMES.get(tok, 0) for tok in value.split("|")))
+    return Prot(value & _ACCESS)
+
+
+def _event_flip(event: dict) -> Flip | None:
+    """The flip a security_file_mprotect event records.
+
+    Only this LSM event has prev_prot; the raw mprotect syscall event does not.
+    Any change to or from PROT_NONE is a NONE_RW flip, whatever the other side,
+    so a hider gains nothing by unlocking with exec or read-only access.
+    """
+    args = {a.get("name"): a.get("value") for a in event.get("args", [])}
+    if "prot" not in args or "prev_prot" not in args:
+        return None
+    prev, new = _parse_prot(args["prev_prot"]), _parse_prot(args["prot"])
+    if (not prev) != (not new):
+        return Flip.NONE_RW
+    if {prev & (Prot.W | Prot.X), new & (Prot.W | Prot.X)} == {Prot.W, Prot.X}:
+        return Flip.RW_RX
+    return None
 
 
 @dataclass
@@ -30,8 +80,7 @@ class PidWindow:
     pid: int
     comm: str = ""
     syscalls: dict[str, int] = field(default_factory=lambda: defaultdict(int))
-    prot_none_to_rw: int = 0   # hallmark of V2-style hiding
-    rw_to_rx: int = 0          # hallmark of JIT (benign)
+    flips: dict[Flip, int] = field(default_factory=lambda: defaultdict(int))
     sigsegv: int = 0
     threads: int = 0
     alerts: int = 0
@@ -41,19 +90,11 @@ class PidWindow:
             "pid": self.pid,
             "comm": self.comm,
             **{f"n_{k}": self.syscalls.get(k, 0) for k in WATCHED},
-            "prot_none_to_rw": self.prot_none_to_rw,
-            "rw_to_rx": self.rw_to_rx,
+            **{f.value: self.flips.get(f, 0) for f in Flip},
             "sigsegv": self.sigsegv,
             "threads": self.threads,
             "tracee_alerts": self.alerts,
         }
-
-
-def _prot_flags(event: dict) -> tuple[str, str]:
-    """Best-effort extraction of (old, new) mprotect protection. Tracee field
-    names vary by version, so this is intentionally defensive."""
-    args = {a.get("name"): a.get("value") for a in event.get("args", [])}
-    return str(args.get("prev_prot", "")), str(args.get("prot", ""))
 
 
 def aggregate(lines) -> dict[int, PidWindow]:
@@ -74,12 +115,8 @@ def aggregate(lines) -> dict[int, PidWindow]:
         name = ev.get("eventName", "")
         if name in WATCHED:
             w.syscalls[name] += 1
-        if name == "mprotect":
-            old, new = _prot_flags(ev)
-            if "NONE" in old and ("READ" in new or "WRITE" in new):
-                w.prot_none_to_rw += 1
-            if ("WRITE" in old or "READ" in old) and "EXEC" in new:
-                w.rw_to_rx += 1
+        if name == "security_file_mprotect" and (flip := _event_flip(ev)):
+            w.flips[flip] += 1
         if name in ("sigsegv", "signal") and "SEGV" in json.dumps(ev):
             w.sigsegv += 1
         if ev.get("metadata", {}).get("Properties", {}).get("signatureName"):
