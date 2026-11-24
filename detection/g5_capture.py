@@ -64,6 +64,21 @@ def harness_args(rows: Iterable[dict]) -> list[str]:
             "--benign-pid", *map(str, benign.values())]
 
 
+def chain_below(path: Path, top: Path) -> list[Path]:
+    """path and each parent of it below top, deepest first (just path if not under top)."""
+    if not path.is_relative_to(top):
+        return [path]
+    rel = path.relative_to(top)
+    return [top / q for q in [rel, *rel.parents][:-1]]  # parents ends with "."
+
+
+def _hand_back(path: Path, top: Path, user: pwd.struct_passwd) -> None:
+    """Give the user every root-owned entry from path up to (not including) top."""
+    for p in chain_below(path, top):
+        if p.exists() and p.stat().st_uid == 0:
+            os.chown(p, user.pw_uid, user.pw_gid)
+
+
 def _descendants(pid: int) -> list[int]:
     """pid and its descendants, parent first."""
     try:
@@ -157,8 +172,9 @@ def capture(args: argparse.Namespace) -> int:
                 tracee.kill()
         UFFD_SYSCTL.write_text(uffd)
         (run_dir / "capture.json").write_text(json.dumps({"tracee_log": str(log), "batches": args.batches}))
-        for p in (run_dir.parent, run_dir, *run_dir.iterdir(), log):
-            os.chown(p, user.pw_uid, user.pw_gid)
+        for p in run_dir.iterdir():
+            _hand_back(p, Path(args.repo), user)
+        _hand_back(log, Path(user.pw_dir), user)
     print(f"captured {args.batches} batches into {log}; score with:\n"
           f"  .venv/bin/python detection/g5_capture.py score {run_dir}")
     return 0

@@ -24,3 +24,15 @@ def test_harness_args_label_every_scored_pid():
     a, b = args.index("--attacker-pid"), args.index("--benign-pid")
     assert sorted(args[a + 1:b]) == ["30", "40"]
     assert sorted(args[b + 1:]) == ["12", "20"]
+
+
+def test_chain_to_hand_back_covers_every_dir_up_to_the_root_it_was_made_under(tmp_path):
+    # capture runs as root and may create results/, results/g5/ and the run dir;
+    # all of them must go back to the user, or the unprivileged score step can't write.
+    from detection.g5_capture import chain_below
+
+    run_dir = tmp_path / "results" / "g5" / "20261124-000000"
+    assert chain_below(run_dir, tmp_path) == [run_dir, run_dir.parent, run_dir.parent.parent]
+    assert chain_below(tmp_path / "x.json", tmp_path) == [tmp_path / "x.json"]
+    elsewhere = tmp_path.parent / "elsewhere.json"  # a --log outside the user's home
+    assert chain_below(elsewhere, tmp_path) == [elsewhere]
