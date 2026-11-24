@@ -35,7 +35,10 @@ SYSTEM = (
     "to PROT_NONE and unlocked again, userfaultfd refills, or memfd_secret).\n"
     "The features are:\n"
     "- none_rw_flips: mprotect changes to or from PROT_NONE (lock or unlock). "
-    "Many of these are the hallmark of hiding.\n"
+    "Runtimes such as V8 and the JVM make many of these when they commit heap "
+    "and set guard pages, so on their own they prove nothing.\n"
+    "- relock_trips: memory regions unlocked from PROT_NONE and then locked "
+    "again. This round trip is the hallmark of hiding; benign runtimes have 0.\n"
     "- rw_rx_flips: mprotect changes between writable and executable. Many of "
     "these are the hallmark of a JIT.\n"
     "- n_userfaultfd, n_memfd_secret: syscall counts. Benign JIT and GC apps do "
@@ -52,7 +55,7 @@ SYSTEM = (
 
 def _heuristic(rec: dict) -> dict:
     """Transparent fallback when no LLM is reachable."""
-    hiding = rec.get("none_rw_flips", 0) + rec.get("n_userfaultfd", 0) + rec.get("n_memfd_secret", 0)
+    hiding = rec.get("relock_trips", 0) + rec.get("n_userfaultfd", 0) + rec.get("n_memfd_secret", 0)
     jit = rec.get("rw_rx_flips", 0)
     verdict = "suspicious" if hiding > jit and hiding > 0 else "benign"
     return {"verdict": verdict, "reason": "heuristic fallback (LLM unreachable)"}

@@ -58,22 +58,21 @@ def _parse_prot(value: int | str) -> Prot:
     return Prot(value & _ACCESS)
 
 
-def _event_flip(event: dict) -> Flip | None:
-    """The flip a security_file_mprotect event records.
+def _flip(prev: Prot, new: Prot) -> Flip | None:
+    """The flip a protection change from prev to new is.
 
-    Only this LSM event has prev_prot; the raw mprotect syscall event does not.
     Any change to or from PROT_NONE is a NONE_RW flip, whatever the other side,
     so a hider gains nothing by unlocking with exec or read-only access.
     """
-    args = {a.get("name"): a.get("value") for a in event.get("args", [])}
-    if "prot" not in args or "prev_prot" not in args:
-        return None
-    prev, new = _parse_prot(args["prev_prot"]), _parse_prot(args["prot"])
     if (not prev) != (not new):
         return Flip.NONE_RW
     if {prev & (Prot.W | Prot.X), new & (Prot.W | Prot.X)} == {Prot.W, Prot.X}:
         return Flip.RW_RX
     return None
+
+
+def _int(value: int | str) -> int:
+    return int(value, 16) if isinstance(value, str) else int(value)
 
 
 @dataclass
@@ -83,7 +82,31 @@ class ProcessFeatures:
     syscalls: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     flips: dict[Flip, int] = field(default_factory=lambda: defaultdict(int))
     segv_handlers: int = 0  # rt_sigaction calls that install a SIGSEGV handler
+    relock_trips: int = 0  # regions unlocked from PROT_NONE, then locked again
+    unlocked: set[tuple[int, int]] = field(default_factory=set)  # (addr, len) now open
     alerts: int = 0
+
+    def mprotect(self, event: dict) -> None:
+        """Count a security_file_mprotect event's flip and any relock round trip.
+
+        Only this LSM event has prev_prot; the raw mprotect syscall event does not.
+        A round trip is keyed by the exact (addr, len) the unlock used.
+        """
+        args = {a.get("name"): a.get("value") for a in event.get("args", [])}
+        if "prot" not in args or "prev_prot" not in args:
+            return
+        prev, new = _parse_prot(args["prev_prot"]), _parse_prot(args["prot"])
+        if not (flip := _flip(prev, new)):
+            return
+        self.flips[flip] += 1
+        if flip is not Flip.NONE_RW or "addr" not in args:
+            return
+        region = (_int(args["addr"]), _int(args.get("len", 0)))
+        if not prev:
+            self.unlocked.add(region)
+        elif region in self.unlocked:
+            self.unlocked.remove(region)
+            self.relock_trips += 1
 
     def as_features(self) -> dict:
         return {
@@ -91,6 +114,7 @@ class ProcessFeatures:
             "comm": self.comm,
             **{f"n_{k}": self.syscalls.get(k, 0) for k in WATCHED},
             **{f.value: self.flips.get(f, 0) for f in Flip},
+            "relock_trips": self.relock_trips,
             "segv_handlers": self.segv_handlers,
             "tracee_alerts": self.alerts,
         }
@@ -104,7 +128,7 @@ def _installs_segv_handler(event: dict) -> bool:
     """
     args = {a.get("name"): a.get("value") for a in event.get("args", [])}
     act = args.get("act") or 0
-    return args.get("signum") == SIGSEGV and (int(act, 16) if isinstance(act, str) else act) != 0
+    return args.get("signum") == SIGSEGV and _int(act) != 0
 
 
 def aggregate(lines) -> dict[int, ProcessFeatures]:
@@ -125,8 +149,8 @@ def aggregate(lines) -> dict[int, ProcessFeatures]:
         name = ev.get("eventName", "")
         if name in WATCHED:
             w.syscalls[name] += 1
-        if name == "security_file_mprotect" and (flip := _event_flip(ev)):
-            w.flips[flip] += 1
+        if name == "security_file_mprotect":
+            w.mprotect(ev)
         if name == "rt_sigaction" and _installs_segv_handler(ev):
             w.segv_handlers += 1
         if ev.get("metadata", {}).get("Properties", {}).get("signatureName"):
