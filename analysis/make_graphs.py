@@ -4,37 +4,58 @@ G3-G6 are wired; each skips with a clear message when its CSV is missing. G1
 and G2 are stubbed with a message naming the memory module whose results feed
 them.
 
-Usage:
-  python -m sim.run_experiment --policies all      # produce results/
-  python analysis/make_graphs.py                   # writes figures/
+Usage (see analysis/README.md):
+  python -m sim.run_experiment --policies all          # results/aggregate_mimicry.csv
+  python -m sim.run_experiment --policies all --g3     # results/aggregate_g3.csv
+  python -m analysis.make_graphs                       # writes figures/
 """
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import NamedTuple
 
 import matplotlib
 import pandas as pd
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib.patches import Patch  # noqa: E402
 
 RESULTS = Path(os.environ.get("RTS_RESULTS_DIR", "./results"))
 FIGURES = Path(os.environ.get("RTS_FIGURES_DIR", "./figures"))
 
 
+FALLBACK_BLUE = "#47a"
 GROUP_COLORS = {
     "baseline": "#888",
     "invariant": "#2a7",
-    "ml-unsupervised": "#47a",
+    "ml-unsupervised": FALLBACK_BLUE,
     "ml-supervised": "#a55",
     "reservation": "#d90",
 }
 G3_CONDITIONS = ["none", "hiding", "starvation", "coupled"]
 G3_POLICIES = ["baseline", "iforest", "rf", "cgroup_weight", "invariant"]
-DETECTOR_LABELS = {"default_sigs": "Tracee default", "custom": "Tracee custom", "ai": "Tracee custom + AI"}
-DECISION_TICKS = 600  # ticks per sim run; overhead_ms is summed over them
+
+
+class DetectorStyle(NamedTuple):
+    label: str
+    color: str
+    marker: str
+    size: int
+
+
+# One row per G5 series. Detectors often land on the same point, so each has its own
+# colour, shape and size, and G5 draws the largest first. `ai` is the LLM-triaged
+# series (its label gets the model name); `heuristic` is `ai` rows run with --no-llm.
+DETECTORS = {
+    "default_sigs": DetectorStyle("Tracee default", "#2ca02c", "s", 260),
+    "custom": DetectorStyle("Tracee custom", "#ff7f0e", "o", 150),
+    "ai": DetectorStyle("custom + AI", "#1f77b4", "^", 70),
+    "heuristic": DetectorStyle("custom + heuristic", "#9467bd", "v", 110),
+}
+DEFAULT_STYLE = DetectorStyle("", "#888888", "D", 110)
 
 
 def _save(fig, name: str) -> Path:
@@ -53,7 +74,7 @@ def g4_policy_comparison() -> bool:
         return False
     df = pd.read_csv(src).sort_values("p95_latency")
 
-    bar_colors = [GROUP_COLORS.get(g, "#47a") for g in df["group"]]
+    bar_colors = [GROUP_COLORS.get(g, FALLBACK_BLUE) for g in df["group"]]
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
     ax1.barh(df["policy"], df["p95_latency"], color=bar_colors)
@@ -74,8 +95,6 @@ def g4_policy_comparison() -> bool:
 
 
 def _group_legend(groups) -> list:
-    from matplotlib.patches import Patch
-
     return [Patch(color=GROUP_COLORS[g], label=g) for g in GROUP_COLORS if g in set(groups)]
 
 
@@ -104,15 +123,13 @@ def g3_attack_conditions() -> bool:
                 ]
             ax.bar(
                 x, rows["miss_rate"].fillna(0), width, yerr=err, hatch=hatch,
-                color=[GROUP_COLORS.get(g, "#47a") for g in rows["group"].fillna("")],
+                color=[GROUP_COLORS.get(g, FALLBACK_BLUE) for g in rows["group"].fillna("")],
                 edgecolor="white", error_kw={"lw": 1, "capsize": 2},
             )
         ax.set_title(cond)
         ax.set_xticks(range(len(policies)), policies, rotation=40, ha="right")
         ax.set_ylim(0, 1.05)
     axes[0].set_ylabel("miss rate (median, IQR bars)")
-    from matplotlib.patches import Patch
-
     handles = _group_legend(df["group"]) + [
         Patch(facecolor="#ccc", edgecolor="white", label="naive attacker"),
         Patch(facecolor="#ccc", edgecolor="white", hatch="//", label="mimicry attacker"),
@@ -125,39 +142,57 @@ def g3_attack_conditions() -> bool:
     return True
 
 
-DETECTOR_STYLE = {  # colour, marker, size
-    "default_sigs": ("#2ca02c", "s", 260),
-    "custom": ("#ff7f0e", "o", 150),
-    "ai": ("#1f77b4", "^", 70),
-}
-DEFAULT_STYLE = ("#888888", "D", 110)
+def _series(row: pd.Series) -> tuple[str, str]:
+    """(style key, legend label) for a G5 row, or ("", "") for an excluded one."""
+    if row["detector"] != "ai":
+        key = row["detector"]
+        return key, DETECTORS.get(key, DEFAULT_STYLE).label or key
+    backend = str(row["triage_backend"])
+    if backend == "heuristic":
+        return "heuristic", DETECTORS["heuristic"].label
+    if backend.startswith("llm:"):
+        return "ai", f"{DETECTORS['ai'].label} ({backend[4:]})"
+    return "", ""  # llm-fallback:* mixes LLM and heuristic answers
 
 
-def pool_detection(df: pd.DataFrame) -> pd.DataFrame:
-    """Pool runs per detector: sum caught / sum n_attackers, sum false_alarms / sum n_benign."""
-    g = df.groupby("detector", as_index=False)[["caught", "n_attackers", "false_alarms", "n_benign"]].sum()
+def pool_detection(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """Pool runs per series: sum caught / sum n_attackers, sum false_alarms / sum n_benign.
+
+    `ai` rows split by triage backend and `llm-fallback:*` rows are dropped; returns
+    the pooled points and the number of dropped rows.
+    """
+    df = df.copy()
+    pairs = [_series(r) for _, r in df.iterrows()]
+    df["style"] = [k for k, _ in pairs]
+    df["label"] = [lab for _, lab in pairs]
+    excluded = int((df["style"] == "").sum())
+    df = df[df["style"] != ""]
+    g = df.groupby(["style", "label"], as_index=False)[["caught", "n_attackers", "false_alarms", "n_benign"]].sum()
     g["catch_rate"] = g["caught"] / g["n_attackers"]
     g["fp_rate"] = g["false_alarms"] / g["n_benign"]
-    return g
+    return g, excluded
 
 
 def g5_detection() -> bool:
-    """G5: Tracee catch rate vs false-alarm rate, default vs custom vs custom + AI."""
+    """G5: Tracee catch rate vs false-alarm rate: default, custom, custom + AI or heuristic."""
     src = RESULTS / "detection_g5.csv"
     if not src.exists():
         print("[G5] skip: needs detection_g5.csv from the detection harness")
         return False
-    pooled = pool_detection(pd.read_csv(src))
-    fig, ax = plt.subplots(figsize=(6.5, 5))
-    # Detectors often land on the same point, so each has its own colour, shape and
-    # size, drawn largest first: a point underneath still shows around the one on top.
-    pooled = pooled.assign(_size=pooled["detector"].map(lambda d: DETECTOR_STYLE.get(d, DEFAULT_STYLE)[2]))
+    pooled, excluded = pool_detection(pd.read_csv(src))
+    if excluded:
+        print(f"[G5] excluded {excluded} llm-fallback rows")
+    if pooled.empty:
+        print("[G5] skip: no usable rows in detection_g5.csv")
+        return False
+    fig, ax = plt.subplots(figsize=(7, 5))
+    pooled = pooled.assign(_size=pooled["style"].map(lambda d: DETECTORS.get(d, DEFAULT_STYLE).size))
     for r in pooled.sort_values("_size", ascending=False).itertuples():
-        color, marker, size = DETECTOR_STYLE.get(r.detector, DEFAULT_STYLE)
+        _, color, marker, size = DETECTORS.get(r.style, DEFAULT_STYLE)
         ax.scatter(r.fp_rate, r.catch_rate, s=size, color=color, marker=marker, zorder=3,
                    edgecolors="white", linewidths=0.8,
-                   label=f"{DETECTOR_LABELS.get(r.detector, r.detector)} "
-                         f"({r.caught}/{r.n_attackers} caught, {r.false_alarms}/{r.n_benign} false alarms)")
+                   label=f"{r.label} ({r.caught}/{r.n_attackers} caught, "
+                         f"{r.false_alarms}/{r.n_benign} false alarms)")
     ax.set_xlim(-0.03, 1.03)
     ax.set_ylim(-0.03, 1.03)
     ax.set_xlabel("false-alarm rate (false alarms / benign processes, pooled over runs)")
@@ -165,27 +200,31 @@ def g5_detection() -> bool:
     ax.set_title("G5: Tracee detection (top-left is best)")
     ax.grid(alpha=0.3)
     ax.legend(loc="lower right", fontsize=8)
-    fig.tight_layout()
+    if excluded:
+        fig.text(0.01, 0.01, f"{excluded} llm-fallback rows excluded (mixed LLM and heuristic answers)",
+                 fontsize=7, color="#555")
+    fig.tight_layout(rect=(0, 0.03, 1, 1))
     out = _save(fig, "G5_detection.png")
     print(f"[G5] wrote {out}")
     return True
 
 
 def g6_overhead() -> bool:
-    """G6: scheduler decision overhead (sim) and AI triage latency (detection)."""
+    """G6: scheduler policy compute time (sim) and AI triage latency (detection)."""
     sched_src = RESULTS / "aggregate_mimicry.csv"
     det_src = RESULTS / "detection_g5.csv"
     sched = pd.read_csv(sched_src) if sched_src.exists() else None
     triage = None
     if det_src.exists():
         d = pd.read_csv(det_src)
-        d = d[d["detector"] == "ai"]
+        d = d[(d["detector"] == "ai") & d["triage_backend"].astype(str).str.startswith("llm:")]
         if len(d):
             triage = d.groupby("triage_backend")["triage_ms_mean"].mean()
     if sched is None:
         print("[G6] skip scheduler part: aggregate_mimicry.csv missing")
     if triage is None:
-        print("[G6] skip triage part: no `ai` rows in detection_g5.csv")
+        print("[G6] skip triage part: no `llm:*` ai rows in detection_g5.csv "
+              "(heuristic latency is not AI overhead, llm-fallback latency includes timeouts)")
     if sched is None and triage is None:
         return False
 
@@ -197,12 +236,10 @@ def g6_overhead() -> bool:
     if sched is not None:
         ax = axes.pop(0)
         sched = sched.sort_values("overhead_ms")
-        ax.barh(sched["policy"], sched["overhead_ms"], color=[GROUP_COLORS.get(g, "#47a") for g in sched["group"]])
+        ax.barh(sched["policy"], sched["overhead_ms"], color=[GROUP_COLORS.get(g, FALLBACK_BLUE) for g in sched["group"]])
         ax.invert_yaxis()
-        ax.set_xlabel(f"scheduler decision time per {DECISION_TICKS}-tick run (ms, sim)")
-        ax.set_title("G6a: scheduler overhead")
-        sec = ax.secondary_xaxis("top", functions=(lambda x: x / DECISION_TICKS * 1000, lambda x: x * DECISION_TICKS / 1000))
-        sec.set_xlabel("per decision (microseconds)")
+        ax.set_xlabel("policy decision code, real wall-clock per run (ms)")
+        ax.set_title("G6a: scheduler policy compute time")
         legend_handles = _group_legend(sched["group"])
     if triage is not None:
         ax = axes.pop(0)
@@ -211,6 +248,9 @@ def g6_overhead() -> bool:
         ax.set_title("G6b: AI triage overhead")
     if sched is not None:
         fig.legend(handles=legend_handles, loc="lower center", ncol=5, fontsize=8, frameon=False)
+        fig.text(0.01, 0.01, "sim times only policy.multipliers, not policy.allocate: "
+                 "reservation policies and the invariant show ~0 by construction",
+                 fontsize=7, color="#555")
     fig.tight_layout(rect=(0, 0.05, 1, 1))
     out = _save(fig, "G6_overhead.png")
     print(f"[G6] wrote {out}")

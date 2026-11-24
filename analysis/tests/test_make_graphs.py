@@ -33,14 +33,15 @@ def _mimicry_csv(res):
     ).to_csv(res / "aggregate_mimicry.csv", index=False)
 
 
-def _g5_csv(res):
+def _g5_csv(res, ai_backend="llm:m1"):
     rows = []
     for run in range(2):
         for det, caught, fa, ms in [("default_sigs", 1, 0, 0.0), ("custom", 3, 2, 0.0), ("ai", 3, 0, 850.0)]:
             rows.append(
                 dict(run_id=run, mode="mimic", detector=det, attacker="v1", benign="suite",
                      n_attackers=4, n_benign=10, caught=caught, false_alarms=fa,
-                     catch_rate=caught / 4, fp_rate=fa / 10, triage_backend="stub",
+                     catch_rate=caught / 4, fp_rate=fa / 10,
+                     triage_backend=ai_backend if det == "ai" else "llm:m1",
                      triage_ms_mean=ms)
             )
     pd.DataFrame(rows).to_csv(res / "detection_g5.csv", index=False)
@@ -87,9 +88,30 @@ def test_g5_writes_and_skips(dirs):
 def test_g5_pools_over_runs(dirs):
     res, _ = dirs
     _g5_csv(res)
-    pooled = mg.pool_detection(pd.read_csv(res / "detection_g5.csv")).set_index("detector")
+    pooled, excluded = mg.pool_detection(pd.read_csv(res / "detection_g5.csv"))
+    pooled = pooled.set_index("style")
+    assert excluded == 0
     assert pooled.loc["custom", "catch_rate"] == pytest.approx(6 / 8)
     assert pooled.loc["custom", "fp_rate"] == pytest.approx(4 / 20)
+    assert pooled.loc["ai", "label"] == "custom + AI (m1)"
+
+
+def test_g5_labels_heuristic_and_drops_llm_fallback(dirs):
+    res, _ = dirs
+    _g5_csv(res, ai_backend="heuristic")
+    pooled, excluded = mg.pool_detection(pd.read_csv(res / "detection_g5.csv"))
+    assert excluded == 0
+    assert set(pooled["style"]) == {"default_sigs", "custom", "heuristic"}
+    _g5_csv(res, ai_backend="llm-fallback:m1")
+    pooled, excluded = mg.pool_detection(pd.read_csv(res / "detection_g5.csv"))
+    assert excluded == 2
+    assert "ai" not in set(pooled["style"])
+
+
+def test_g6_triage_ignores_non_llm_rows(dirs):
+    res, _ = dirs
+    _g5_csv(res, ai_backend="heuristic")
+    assert mg.g6_overhead() is False  # heuristic latency is not AI overhead
 
 
 def test_g6_all_parts_missing_skips(dirs):
