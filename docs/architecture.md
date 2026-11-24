@@ -57,11 +57,13 @@ a benign app), while the invariant holds.
 
 ### The 15 ML policies: calibration and behavior
 
-Every policy sees the same six timing features per process per tick. Unsupervised
-detectors are trained on legitimate windows only (benign apps + monitor) and
-demote an outlier to x0.1. Supervised classifiers are trained on {normal, naive
-hog, monitor}; they demote a predicted hog to x0.1 and boost the predicted
-monitor to x2.
+Every policy sees the same six timing features per process per tick. Both
+families respond the same way: demote a suspected hog to x0.1 and boost the
+monitor to x2. Unsupervised detectors are trained on legitimate windows only
+(benign apps + monitor); they demote an outlier and boost the monitor by role,
+unless they flag the monitor itself. Supervised classifiers are trained on
+{normal, naive hog, monitor}; they demote a predicted hog and boost the
+predicted monitor. See "Scenario balance" below.
 
 **How the hyperparameters were chosen.** Values live in `sim/policies/ml.py`.
 They were calibrated for the default scenario (`sim/config.yaml`) using held-out
@@ -141,9 +143,53 @@ can separate it.
 summed over a run. Without the pin, OpenMP thread wake-ups inflated `histgb`
 about 10x (13 ms to 1 ms per decision).
 
-**Known limitation (tracked in #7).** Catching the hog is not yet enough to
-protect the monitor. With penalty x0.1, a demoted naive hog keeps weight 1.5
-against the monitor's 0.25, so the unsupervised family misses the 8-tick window
-even when detection is perfect. Even with no attacker at all, the benign load
-alone holds the monitor at about 9 ticks. Until the scenario is rebalanced,
-naive vs mimicry does not isolate mimicry's effect.
+### Scenario balance (#7)
+
+The scenario is set so that detection decides the outcome: a scheduler that
+catches the hog protects the monitor, and one that is fooled does not. A
+process's weight is `claimed_priority x demand x multiplier`, and the monitor
+needs a share of at least 1/8 to finish a scan inside the 8-tick window. The
+weights are: monitor 0.5, four benign apps 2.0 in total, and the hog 15 (1.5
+once demoted x0.1).
+
+| condition | monitor share | ticks per scan |
+|---|---|---|
+| no attacker, any policy without a boost | 0.5 / 2.5 = 20% | 5 |
+| naive hog, baseline (undefended) | 0.5 / 17.5 = 2.9% | 35 |
+| naive hog, detected by either ML family | 1.0 / 4.5 = 22% | about 4.5 |
+| mimic, undetected (boost applied) | 1.0 / 18 = 5.6% | 18 |
+| invariant, any condition | at least 20% | at most 5 |
+
+So detected means protected, mimicry means starved, and the invariant is always
+safe. Before #7 the monitor's demand was 0.25: the benign load alone held it at
+about 9 ticks, and the unsupervised family, which only demoted outliers, missed
+the window even with perfect detection.
+
+The unsupervised boost is given by role and kept by behavior. The scheduler
+knows which process is the monitor, but a window that the detector flags is
+demoted x0.1 instead, so each false positive on the monitor costs it a tick.
+The boost is a multiplier, not a reservation: a hog that is not demoted still
+outweighs it. Only S3 guarantees a share. Demand and multipliers are not
+observed features, so the #6 calibration still holds; `python -m sim.calibrate`
+picks the same values. `sim/tests/test_scenario.py` guards all of this.
+
+### Attack conditions (G3)
+
+`SimConfig.condition` (CLI `--condition`) separates the two halves of the attack:
+
+| condition | attacker | a scan catches it if |
+|---|---|---|
+| `none` | absent | latency <= 8 (measures the monitor's timeliness only) |
+| `hiding` | hides; benign timing and a benign app's share | latency <= 8 |
+| `starvation` | hogs the CPU (naive or mimic timing); never hides | any scan completes |
+| `coupled` (default) | hides and hogs | latency <= 8 |
+
+`python -m sim.run_experiment --policies all --g3` runs every condition in both
+attacker modes and writes `results/aggregate_g3.csv` (and `per_run_g3.csv`),
+keyed by `condition`, `mimicry`, `policy`, and `group`. `mimicry` only changes
+anything where the attacker hogs. Every condition uses the same detector
+training (legit behavior plus the naive hog), so the attacker is blind to the
+trained detector and the mimic never appears in training. Expected shape: hiding
+alone is caught because the scanner runs on time, starvation alone is caught
+because nothing is hidden, and only the coupled attack beats an undefended or
+fooled scheduler.
