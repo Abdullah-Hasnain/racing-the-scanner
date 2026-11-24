@@ -12,7 +12,8 @@ from detection.aggregator import aggregate
 VM_MAY = 0x70  # VM_MAYREAD | VM_MAYWRITE | VM_MAYEXEC, set on ordinary anonymous memory
 
 
-def mprotect_event(pid: int, prev_prot, prot, comm: str = "proc") -> str:
+def mprotect_event(pid: int, prev_prot, prot, comm: str = "proc", addr: str = "0x7f0000000000",
+                   length: int = 4096) -> str:
     return json.dumps({
         "processId": pid,
         "processName": comm,
@@ -22,8 +23,8 @@ def mprotect_event(pid: int, prev_prot, prot, comm: str = "proc") -> str:
             {"name": "prot", "value": prot},
             {"name": "ctime", "value": 0},
             {"name": "prev_prot", "value": prev_prot},
-            {"name": "addr", "value": "0x7f0000000000"},
-            {"name": "len", "value": 4096},
+            {"name": "addr", "value": addr},
+            {"name": "len", "value": length},
         ],
     })
 
@@ -92,3 +93,55 @@ def test_any_flip_to_or_from_prot_none_counts_as_hiding():
     ]
     f = features(lines)[7]
     assert (f["none_rw_flips"], f["rw_rx_flips"]) == (3, 0)
+
+
+def syscall_event(pid: int, name: str, **args) -> str:
+    return json.dumps({
+        "processId": pid,
+        "processName": "v2",
+        "eventName": name,
+        "args": [{"name": k, "value": v} for k, v in args.items()],
+    })
+
+
+def test_segv_handler_installs_and_signal_returns_are_counted():
+    lines = [
+        syscall_event(7, "rt_sigaction", signum=11, act="0x7ffd0000", oldact="0x0"),
+        syscall_event(7, "rt_sigaction", signum=14, act="0x7ffd0000", oldact="0x0"),  # SIGALRM
+        syscall_event(7, "rt_sigaction", signum=11, act="0x0", oldact="0x7ffd0000"),  # query only
+        *[syscall_event(7, "rt_sigreturn") for _ in range(3)],
+    ]
+    f = features(lines)[7]
+    assert f["segv_handlers"] == 1
+    assert f["n_rt_sigreturn"] == 3
+    assert "sigsegv" not in f
+
+
+def test_relock_trips_count_pages_unlocked_then_locked_again():
+    # V2 exposes a page and hides it again; that round trip on one region is hiding.
+    page_a, page_b = "0x7f0000001000", "0x7f0000002000"
+    lines = [
+        mprotect_event(7, "PROT_READ|PROT_WRITE", "PROT_NONE", length=1 << 20),  # lock buffer
+        mprotect_event(7, "", "PROT_READ|PROT_WRITE", addr=page_a),  # unlock a
+        mprotect_event(7, "PROT_READ|PROT_WRITE", "PROT_NONE", addr=page_a),  # relock a
+        mprotect_event(7, "", "PROT_READ|PROT_WRITE", addr=page_b),  # unlock b
+        mprotect_event(7, "PROT_READ|PROT_WRITE", "PROT_NONE", addr=page_b),  # relock b
+        mprotect_event(7, "", "PROT_READ|PROT_WRITE", addr=page_a),  # unlock a, left open
+    ]
+    f = features(lines)[7]
+    assert f["relock_trips"] == 2
+    assert f["none_rw_flips"] == 6
+
+
+def test_runtime_commits_and_guard_pages_are_not_relock_trips():
+    # V8 and the JVM unlock heap once and set guard pages on other regions:
+    # flips to and from PROT_NONE, but no region is unlocked and then locked again.
+    lines = [
+        mprotect_event(9, "", "PROT_READ|PROT_WRITE", addr="0x7f0000010000", length=32768),
+        mprotect_event(9, "", "PROT_READ|PROT_WRITE", addr="0x7f0000020000", length=262144),
+        mprotect_event(9, "PROT_READ|PROT_WRITE", "PROT_NONE", addr="0x7f0000030000"),  # guard page
+        mprotect_event(9, "PROT_READ|PROT_WRITE", "PROT_NONE", addr="0x7f0000010000", length=4096),
+    ]
+    f = features(lines)[9]
+    assert f["relock_trips"] == 0
+    assert f["none_rw_flips"] == 4

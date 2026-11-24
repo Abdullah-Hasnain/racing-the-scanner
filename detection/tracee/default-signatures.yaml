@@ -1,0 +1,45 @@
+# Tracee's own default signatures, the "Tracee default" detector in G5 (#13).
+# A policy cannot select an event set by name, so each signature is listed.
+# Generated from Tracee v0.23.2 (v0.24.x ships a signatures plugin that fails to
+# load, so it has no signatures at all):
+#   tracee list --wide | awk -F'|' '/signatures, default/ {gsub(/ /,"",$2); print "    - event: " $2}'
+# Load alongside memory-hiding.yaml:
+#   tracee --policy detection/tracee/memory-hiding.yaml \
+#          --policy detection/tracee/default-signatures.yaml ...
+apiVersion: tracee.aquasec.com/v1beta1
+kind: Policy
+metadata:
+  name: rts-default-signatures
+  annotations:
+    description: Tracee default signature set, for the G5 baseline
+spec:
+  scope:
+    - global
+  rules:
+    - event: stdio_over_socket
+    - event: k8s_api_connection
+    - event: aslr_inspection
+    - event: docker_abuse
+    - event: scheduled_task_mod
+    - event: ld_preload
+    - event: cgroup_notify_on_release
+    - event: default_loader_mod
+    - event: sudoers_modification
+    - event: sched_debug_recon
+    - event: system_request_key_mod
+    - event: cgroup_release_agent
+    - event: rcd_modification
+    - event: core_pattern_modification
+    - event: proc_kcore_read
+    - event: proc_mem_access
+    - event: hidden_file_created
+    - event: anti_debugging
+    - event: ptrace_code_injection
+    - event: process_vm_write_inject
+    - event: disk_mount
+    - event: dynamic_code_loading
+    - event: fileless_execution
+    - event: kernel_module_loading
+    - event: k8s_cert_theft
+    - event: proc_fops_hooking
+    - event: syscall_hooking
