@@ -260,8 +260,8 @@ def test_benign_only_run_scores_false_alarms(log, tmp_path, monkeypatch):
 
 def test_empty_comm_prefix_matches_nothing(log):
     # `--benign-comm ""` must not label every process on the host as benign.
-    sc, _ = harness.run_offline(log, True, attacker_comm=["v2"], benign_comm=[""])
-    assert sc.n_benign == 0
+    ev = harness.run_offline(log, True, attacker_comm=["v2"], benign_comm=[""])
+    assert all(sc.n_benign == 0 for sc in ev.scores.values())
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="as root the harness does not go through sudo")
