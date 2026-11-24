@@ -1,9 +1,12 @@
 import csv
 import json
+import os
+import time
+from pathlib import Path
 
 import pytest
 
-from detection import harness
+from detection import harness, triage_llm
 from detection.harness import LabelledVerdict, score
 
 
@@ -86,3 +89,53 @@ def test_live_fails_clearly_without_tracee():
     with pytest.raises(SystemExit) as e:
         harness.main(["--live", "--attacker-comm", "v2", "--tracee-bin", "/nonexistent/tracee"])
     assert "tracee not found" in str(e.value)
+
+
+def test_unreachable_llm_is_labelled_as_a_fallback(log, monkeypatch):
+    # Without Ollama, triage silently uses the heuristic; the CSV must say so.
+    def down(*a, **kw):
+        raise ConnectionError("no ollama")
+
+    monkeypatch.setattr(triage_llm.requests, "post", down)
+    _, backend = harness.run_offline(log, no_llm=False, attacker_comm=["v2"], benign_comm=["node"])
+    assert backend == f"llm-fallback:{triage_llm.LLM_MODEL}"
+
+
+def _script(path: Path, body: str) -> Path:
+    path.write_text("#!/bin/sh\n" + body)
+    path.chmod(0o755)
+    return path
+
+
+def _gone(pid: int, timeout: float = 3.0) -> bool:
+    end = time.monotonic() + timeout
+    while Path(f"/proc/{pid}").exists() and time.monotonic() < end:
+        time.sleep(0.05)
+    return not Path(f"/proc/{pid}").exists()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="as root the harness does not go through sudo")
+def test_live_stops_root_tracee_through_sudo_and_every_workload_process(tmp_path, monkeypatch):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls, stopped, grandchild = tmp_path / "sudo.log", tmp_path / "stopped", tmp_path / "gc.pid"
+    # Stand-in sudo: log the call, drop the flags, run the rest as this user.
+    _script(bin_dir / "sudo", f'echo "$*" >> {calls}\n'
+            'while [ "${1#-}" != "$1" ]; do shift; done\n[ $# -eq 0 ] || exec "$@"\n')
+    tracee = _script(tmp_path / "tracee", f"trap 'echo INT > {stopped}; exit 0' INT\n"
+                     "while :; do sleep 0.05; done\n")
+    attacker = _script(tmp_path / "attacker", f"sleep 300 &\necho $! > {grandchild}\nwait\n")
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("RTS_RESULTS_DIR", str(tmp_path / "res"))
+    args = harness.build_parser().parse_args([
+        "--live", "--attacker-comm", "attacker", "--attacker-bin", str(attacker),
+        "--tracee-bin", str(tracee), "--seconds", "1", "--tracee-warmup", "0.3",
+    ])
+
+    harness.run_live(args, "t")
+
+    sudo_calls = calls.read_text().splitlines()
+    assert sudo_calls[0] == "-v", "sudo must prompt before the warm-up timer starts"
+    assert any(c.startswith("-n kill -INT") for c in sudo_calls), "root Tracee needs sudo to stop"
+    assert stopped.read_text().strip() == "INT", "Tracee must get SIGINT so it flushes"
+    assert _gone(int(grandchild.read_text())), "the attacker's child outlived the run"

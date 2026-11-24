@@ -5,7 +5,8 @@ Offline (saved Tracee JSON log):
   python -m detection.harness --tracee-log saved.json \
       --attacker-comm v2 v3 --benign-comm node python3
 
-Live (needs root and an installed Tracee; not runnable in CI):
+Live (needs an installed Tracee and sudo, which prompts once at the start; not
+runnable in CI):
   python -m detection.harness --live --attacker-bin memory/bin/v2 --seconds 20 \
       --attacker-comm v2 --benign-comm python
 
@@ -37,6 +38,7 @@ CSV_COLUMNS = [
     "caught", "false_alarms", "catch_rate", "fp_rate", "triage_backend",
 ]
 DEFAULT_POLICY = "detection/tracee/memory-hiding.yaml"
+RUN_BENIGN = Path(__file__).resolve().parent / "benign" / "run_benign.py"
 
 
 @dataclass(frozen=True)
@@ -112,14 +114,24 @@ def run_offline(
     attacker_pid: Sequence[int] = (),
     benign_pid: Sequence[int] = (),
 ) -> tuple[Score, str]:
-    """aggregate -> triage -> score. Returns the score and the backend name."""
+    """aggregate -> triage -> score. Returns the score and the backend name, which
+    is "llm-fallback:<model>" if the LLM was unreachable for any record."""
     records = [w.as_features() for w in aggregator.aggregate(log_lines).values()]
     if no_llm:
-        fn, backend = triage_llm._heuristic, "heuristic"
-    else:
-        fn, backend = triage_llm.triage, f"llm:{triage_llm.LLM_MODEL}"
-    sc = label_and_score(records, fn, attacker_comm, benign_comm, attacker_pid, benign_pid)
-    return sc, backend
+        sc = label_and_score(
+            records, triage_llm._heuristic, attacker_comm, benign_comm, attacker_pid, benign_pid
+        )
+        return sc, "heuristic"
+    sources: set[str] = set()
+
+    def triage(rec: dict) -> dict:
+        tri = triage_llm.triage(rec)
+        sources.add(tri["source"])
+        return tri
+
+    sc = label_and_score(records, triage, attacker_comm, benign_comm, attacker_pid, benign_pid)
+    kind = "llm-fallback" if "heuristic" in sources else "llm"
+    return sc, f"{kind}:{triage_llm.LLM_MODEL}"
 
 
 def results_dir() -> Path:
@@ -146,6 +158,40 @@ def write_row(run_id: str, mode: str, attacker: str, benign: str, sc: Score, bac
     return path
 
 
+def _stop_tracee(tr: subprocess.Popen, sudo: bool) -> None:
+    """SIGINT so Tracee flushes its log, then SIGTERM. Through sudo, Tracee runs
+    as root and only sudo may signal it; sudo relays both signals to Tracee."""
+    for sig, timeout in ((signal.SIGINT, 10), (signal.SIGTERM, 5)):
+        if tr.poll() is not None:
+            return
+        if sudo:
+            subprocess.run(["sudo", "-n", "kill", f"-{sig.name[3:]}", str(tr.pid)], check=False)
+        else:
+            tr.send_signal(sig)
+        try:
+            tr.wait(timeout=timeout)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+    print(f"warning: tracee (pid {tr.pid}) ignored SIGINT and SIGTERM; "
+          f"stop it with: sudo kill -KILL {tr.pid}", file=sys.stderr)
+
+
+def _stop_group(p: subprocess.Popen) -> None:
+    """SIGTERM a workload's whole process group, so the processes it started
+    (node, java, a hider's helpers) stop with it; SIGKILL if it hangs."""
+    for sig, timeout in ((signal.SIGTERM, 10), (signal.SIGKILL, 5)):
+        try:
+            os.killpg(p.pid, sig)
+        except ProcessLookupError:
+            return  # the whole group already exited
+        try:
+            p.wait(timeout=timeout)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+
+
 def run_live(args: argparse.Namespace, run_id: str) -> Path:
     """Launch Tracee, the attacker and a benign workload, wait, stop, and
     return the path of the saved raw Tracee log."""
@@ -165,34 +211,33 @@ def run_live(args: argparse.Namespace, run_id: str) -> Path:
     d = results_dir()
     d.mkdir(parents=True, exist_ok=True)
     log_path = d / f"tracee_{run_id}.json"
-    benign_cmd = [sys.executable, "detection/benign/run_benign.py"]
+    benign_cmd = [sys.executable, str(RUN_BENIGN)]
     benign_cmd += ["--workload", args.workload] if args.workload else ["--stub"]
     benign_cmd += ["--seconds", str(args.seconds)]
+    sudo = os.geteuid() != 0
+    if sudo and subprocess.run(["sudo", "-v"]).returncode != 0:  # prompt now, not mid-run
+        raise SystemExit("error: live mode needs sudo for Tracee")
     tracee_cmd = [
-        "sudo", tracee, "--policy", args.policy,
+        *(["sudo"] if sudo else []), tracee, "--policy", args.policy,
         "--output", "json", "--output", "option:parse-arguments",
     ]
 
-    procs: list[subprocess.Popen] = []
+    tr: subprocess.Popen | None = None
+    workloads: list[subprocess.Popen] = []
     with log_path.open("w") as out, open(d / f"tracee_{run_id}.stderr", "w") as err:
         try:
             tr = subprocess.Popen(tracee_cmd, stdout=out, stderr=err)
-            procs.append(tr)
             time.sleep(args.tracee_warmup)  # let Tracee attach before workloads start
             if tr.poll() is not None:
                 raise SystemExit(f"error: tracee exited early (code {tr.returncode}); see {err.name}")
-            procs.append(subprocess.Popen([args.attacker_bin]))
-            procs.append(subprocess.Popen(benign_cmd))
+            for cmd in ([args.attacker_bin], benign_cmd):  # each in its own process group
+                workloads.append(subprocess.Popen(cmd, start_new_session=True))
             time.sleep(args.seconds)
         finally:
-            for p in reversed(procs):  # workloads first, Tracee last so it flushes
-                if p.poll() is None:
-                    p.send_signal(signal.SIGINT if p is procs[0] else signal.SIGTERM)
-            for p in reversed(procs):
-                try:
-                    p.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    p.kill()
+            for p in workloads:  # workloads first, Tracee last so it flushes
+                _stop_group(p)
+            if tr is not None:
+                _stop_tracee(tr, sudo)
     return log_path
 
 
@@ -236,6 +281,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     attacker = " ".join(args.attacker_comm + [str(p) for p in args.attacker_pid])
     benign = " ".join(args.benign_comm + [str(p) for p in args.benign_pid])
+    if backend.startswith("llm-fallback"):
+        print(f"warning: the LLM was unreachable for some records; they were triaged by "
+              f"the heuristic (triage_backend={backend})", file=sys.stderr)
     csv_path = write_row(run_id, mode, attacker, benign, sc, backend)
     print(json.dumps({
         "run_id": run_id, "mode": mode, "n_attackers": sc.n_attackers, "n_benign": sc.n_benign,
