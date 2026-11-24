@@ -96,7 +96,7 @@ mkdir -p ~/tracee/out && cd ~/tracee
 curl -fLO https://github.com/aquasecurity/tracee/releases/download/v0.23.2/tracee-x86_64.v0.23.2.tar.gz
 echo "6a3f2cdc5023bc833d261cf4e3d84ff258b24a8b313f8f20438f0b04842060fa  tracee-x86_64.v0.23.2.tar.gz" | sha256sum -c
 mkdir -p v0.23.2 && tar -xzf tracee-x86_64.v0.23.2.tar.gz -C v0.23.2
-./v0.23.2/dist/tracee list | grep -c "signatures, default"   # expect 27
+./v0.23.2/dist/tracee list --wide | grep -c "signatures, default"   # expect 27
 
 cd ~/racing-the-scanner
 sudo ~/tracee/v0.23.2/dist/tracee \
