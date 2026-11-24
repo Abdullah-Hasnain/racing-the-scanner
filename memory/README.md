@@ -22,6 +22,14 @@ make check      # syntax-check only (what CI runs)
 
 Each prints its PID. Keep it running while you scan it.
 
+### V2 options
+
+```bash
+./bin/v2 --dwell-ms 10 --interval-ms 100 --pattern seq
+```
+
+Flags: `--dwell-ms <ms>` (exposure window per page, min 0.1), `--interval-ms <ms>` (delay between touches, `0` for tight loop), `--pattern <seq|random|stride>`, `--duration <sec>` (`0` until Ctrl-C), and `--seed <u64>`.
+
 ## Scan it
 
 ```bash
