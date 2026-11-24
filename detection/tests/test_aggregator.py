@@ -156,3 +156,22 @@ def test_hand_written_hex_and_spaced_prots_parse_like_tracee_output():
     f = features(lines)
     assert (f[7]["none_rw_flips"], f[7]["rw_rx_flips"]) == (1, 0)
     assert (f[9]["none_rw_flips"], f[9]["rw_rx_flips"]) == (0, 1)
+
+
+def named_event(pid: int, tid: int, comm: str) -> str:
+    return json.dumps({"processId": pid, "threadId": tid, "processName": comm,
+                       "eventName": "madvise", "args": []})
+
+
+def test_process_is_named_by_its_main_thread_not_its_workers():
+    # Real capture: run_benign.py's child is "python" until it execs node, and
+    # V8/JVM worker threads carry their own names ("V8Worker", "C1 CompilerThre").
+    lines = [
+        named_event(50, 50, "python"),
+        named_event(50, 50, "node"),
+        named_event(50, 51, "V8Worker"),
+        named_event(60, 61, "HeapHelper"),  # no main-thread event: keep what we saw
+    ]
+    f = features(lines)
+    assert f[50]["comm"] == "node"
+    assert f[60]["comm"] == "HeapHelper"
