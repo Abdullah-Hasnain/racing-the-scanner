@@ -51,10 +51,17 @@ def _parse_prot(value: int | str) -> Prot:
 
     Raw prev_prot is the region's vm_flags, which carries bits above R/W/X
     (VM_MAYREAD and friends); they are dropped. With parse-arguments on, Tracee
-    names only the PROT_* bits, so a PROT_NONE region renders as "".
+    names only the PROT_* bits, so a PROT_NONE region renders as "". A numeric
+    string ("0x70") is read as the raw value.
     """
     if isinstance(value, str):
-        return Prot(sum(_PROT_NAMES.get(tok, 0) for tok in value.split("|")))
+        try:
+            value = int(value, 0)
+        except ValueError:
+            prot = Prot(0)
+            for tok in value.split("|"):
+                prot |= _PROT_NAMES.get(tok.strip(), Prot(0))
+            return prot
     return Prot(value & _ACCESS)
 
 
