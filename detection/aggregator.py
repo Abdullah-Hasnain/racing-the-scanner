@@ -23,7 +23,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import IntFlag, StrEnum
 
-WATCHED = ("mprotect", "madvise", "userfaultfd", "memfd_secret", "rt_sigreturn")
+WATCHED = ("mprotect", "madvise", "userfaultfd", "memfd_secret")
 SIGSEGV = 11
 
 
