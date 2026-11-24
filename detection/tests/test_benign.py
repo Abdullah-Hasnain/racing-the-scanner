@@ -32,7 +32,10 @@ def _child_named(pid: int, comm: str, timeout: float = 30.0) -> int:
     raise AssertionError(f"no '{comm}' child of {pid} within {timeout}s")
 
 
-@pytest.mark.skipif(shutil.which("gcc") is None, reason="malloc workload needs gcc")
+@pytest.mark.skipif(
+    sys.platform != "linux" or shutil.which("gcc") is None,
+    reason="malloc workload and /proc check need Linux + gcc",
+)
 def test_sigterm_stops_the_workload_and_removes_its_build(tmp_path):
     env = {**os.environ, "TMPDIR": str(tmp_path)}
     driver = subprocess.Popen(
