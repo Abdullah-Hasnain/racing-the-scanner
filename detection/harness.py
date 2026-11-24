@@ -11,6 +11,11 @@ runnable in CI):
       --attacker-comm v2 --benign-comm python
 
 Processes matching neither the attacker nor the benign selectors are ignored.
+In live mode only the processes the harness started, and their children, can
+match: --attacker-comm / --benign-comm narrow those trees by name, so another
+python process on the host is never counted as the benign workload.
+Build steps share the tree; `go build` is told apart by name, but java-gc's
+compile JVM is also "java" and counts as a second benign process.
 Three rows (default_sigs, custom, ai) are appended per run to
 $RTS_RESULTS_DIR/detection_g5.csv (default ./results).
 """
@@ -153,6 +158,39 @@ def label_and_score(
     )
 
 
+def spawned_pids(log_lines: Iterable[str], root: int, comms: Sequence[str]) -> list[int]:
+    """PIDs in root's process tree (root included) whose name matches a prefix in
+    comms, or the whole tree when comms is empty. A process is named after its
+    main thread, as in the aggregator, and keeps the parent it was first seen
+    with, so the tree survives the parent exiting first."""
+    parent: dict[int, int] = {}
+    name: dict[int, str] = {}
+    for line in log_lines:
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        pid = ev.get("processId")
+        if pid is None:
+            continue
+        parent.setdefault(pid, ev.get("parentProcessId", 0))
+        if ev.get("threadId", pid) == pid or pid not in name:
+            name[pid] = ev.get("processName", "")
+
+    def in_tree(pid: int | None) -> bool:
+        seen: set[int] = set()
+        while pid is not None and pid not in seen:
+            if pid == root:
+                return True
+            seen.add(pid)
+            pid = parent.get(pid)
+        return False
+
+    return sorted(
+        p for p in parent if in_tree(p) and (not comms or _matches(p, name[p], comms, ()))
+    )
+
+
 def run_offline(
     log_lines: Iterable[str],
     no_llm: bool,
@@ -241,9 +279,9 @@ def _stop_group(p: subprocess.Popen) -> None:
             pass
 
 
-def run_live(args: argparse.Namespace, run_id: str) -> Path:
+def run_live(args: argparse.Namespace, run_id: str) -> tuple[Path, int, int]:
     """Launch Tracee, the attacker and a benign workload, wait, stop, and
-    return the path of the saved raw Tracee log."""
+    return the saved raw Tracee log and the attacker's and workload's PIDs."""
     tracee = shutil.which(args.tracee_bin) or (
         args.tracee_bin if Path(args.tracee_bin).is_file() else None
     )
@@ -289,7 +327,7 @@ def run_live(args: argparse.Namespace, run_id: str) -> Path:
                 _stop_group(p)
             if tr is not None:
                 _stop_tracee(tr, sudo)
-    return log_path
+    return log_path, workloads[0].pid, workloads[1].pid
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -324,15 +362,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         ap.error("need an --attacker-* or --benign-* selector")
     run_id = args.run_id or uuid.uuid4().hex[:8]
 
+    attacker_comm, benign_comm = args.attacker_comm, args.benign_comm
+    attacker_pid, benign_pid = args.attacker_pid, args.benign_pid
     if args.live:
-        log_path = run_live(args, run_id)
+        log_path, attacker_root, benign_root = run_live(args, run_id)
         mode = "live"
+        # Label by the trees the harness started, narrowed by name, not by name alone.
+        with log_path.open(encoding="utf-8") as f:
+            attacker_pid = spawned_pids(f, attacker_root, attacker_comm)
+        with log_path.open(encoding="utf-8") as f:
+            benign_pid = spawned_pids(f, benign_root, benign_comm)
+        attacker_comm, benign_comm = [], []
+        for side, pids in (("attacker", attacker_pid), ("benign", benign_pid)):
+            if not pids:
+                print(f"warning: no {side} process in the log matched; check --{side}-comm",
+                      file=sys.stderr)
     else:
         log_path, mode = Path(args.tracee_log), "offline"
     with log_path.open(encoding="utf-8") as f:
         ev = run_offline(
-            f, args.no_llm, args.attacker_comm, args.benign_comm,
-            args.attacker_pid, args.benign_pid,
+            f, args.no_llm, attacker_comm, benign_comm, attacker_pid, benign_pid
         )
     attacker = " ".join(args.attacker_comm + [str(p) for p in args.attacker_pid])
     benign = " ".join(args.benign_comm + [str(p) for p in args.benign_pid])
