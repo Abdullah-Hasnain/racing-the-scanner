@@ -80,28 +80,38 @@ rate of `rt_sigreturn` alongside `none_rw_flips` is what marks V2.
 
 ## Running Tracee
 
-v0.24.1 runs on kernel 7.0. It needs real root: `perf_event_paranoid` is 4 on
-Ubuntu, so the `CAP_BPF` + `CAP_PERFMON` route does not apply. Run it from a
-real terminal, since `sudo` cannot prompt inside Claude Code's `!` commands.
+Use **v0.23.2**. v0.24.0 and v0.24.1 ship a signatures plugin that fails to load
+("plugin was built with a different version of package net"), so they run with
+no default signatures at all: `tracee list` shows an empty "Signature Events"
+section, and the G5 `default_sigs` detector would measure nothing. v0.23.2 loads
+65 signatures, 27 of them in the default set. Both versions report
+`security_file_mprotect` and `rt_sigaction` with the same fields.
+
+Tracee needs real root: `perf_event_paranoid` is 4 on Ubuntu, so the `CAP_BPF` +
+`CAP_PERFMON` route does not apply. Run it from a real terminal, since `sudo`
+cannot prompt inside Claude Code's `!` commands.
 
 ```bash
 mkdir -p ~/tracee/out && cd ~/tracee
-curl -fLO https://github.com/aquasecurity/tracee/releases/download/v0.24.1/tracee-x86_64.v0.24.1.tar.gz
-echo "8cc56bd8c8dd3efadb0441c84849592affc48a71d3afbe7751a9e2014ef9ec85  tracee-x86_64.v0.24.1.tar.gz" | sha256sum -c
-tar -xzf tracee-x86_64.v0.24.1.tar.gz && ./dist/tracee version
+curl -fLO https://github.com/aquasecurity/tracee/releases/download/v0.23.2/tracee-x86_64.v0.23.2.tar.gz
+echo "6a3f2cdc5023bc833d261cf4e3d84ff258b24a8b313f8f20438f0b04842060fa  tracee-x86_64.v0.23.2.tar.gz" | sha256sum -c
+mkdir -p v0.23.2 && tar -xzf tracee-x86_64.v0.23.2.tar.gz -C v0.23.2
+./v0.23.2/dist/tracee list | grep -c "signatures, default"   # expect 27
 
 cd ~/racing-the-scanner
-sudo ~/tracee/dist/tracee --policy detection/tracee/memory-hiding.yaml \
+sudo ~/tracee/v0.23.2/dist/tracee \
+  --policy detection/tracee/memory-hiding.yaml \
+  --policy detection/tracee/default-signatures.yaml \
   --install-path /tmp/tracee-install \
   --output json:$HOME/tracee/out/events.json --output option:parse-arguments
 ```
 
+`default-signatures.yaml` lists the default set by name, because a policy rule
+cannot name an event set (`event: default` is rejected as "not valid").
+
 - `--install-path` must sit outside a private home directory (mode 750): Tracee
   drops root's file-permission override before it creates that directory.
-- The shipped checksum file names `./dist/...` and fails `sha256sum -c`; check
-  the hash inline as above.
-- "plugin was built with a different version of package net" for
-  `signatures/builtin.so` is logged as an error but is not fatal.
+- Check the hash inline as above; the shipped checksum file names `./dist/...`.
 - Once it goes quiet it is attached; events go to the file, not the terminal.
   With `scope: global` it writes about 1 MB/s. Stop it with Ctrl-C.
 - The output file is owned by root and world-readable.
