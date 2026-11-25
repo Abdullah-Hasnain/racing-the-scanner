@@ -225,3 +225,14 @@ def test_attacker_that_exits_early_raises_with_its_own_output(cell):
     with pytest.raises(coupled_live.CellFailed, match="integrity mismatch"):
         cell(scanning, v2_body=exits)
     assert all(_gone(p) for p in cell.joined)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="stand-ins need /bin/sh and SIGINT")
+def test_v1_rows_have_no_v2_fault_count(cell):
+    # Since #52, V1 also prints "done: ... faults=0" on SIGINT; that is not a V2 count.
+    row = cell(
+        "import time\n"
+        "for i in range(60): print(f'scan {i} found=1 scan_ms= 0.30', flush=True); time.sleep(0.02)\n",
+        condition="none",
+    )
+    assert row["attacker"] == "v1" and row["v2_faults"] is None
