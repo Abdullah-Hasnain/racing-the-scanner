@@ -134,7 +134,7 @@ def test_build_sweep_grid_defaults():
 
 def test_smoke_grid_and_cli_validation():
     args = sweep_g1.parse_args(["--smoke"])
-    assert args.intervals == [0.05, 0.5]
+    assert args.intervals == [0.037, 0.537]
     assert args.dwell_ms == [5.0, 25.0]
     assert args.reps == 1
     assert args.duration == 2.0
@@ -633,3 +633,14 @@ def test_pin_fn_calls_sched_setaffinity(monkeypatch: pytest.MonkeyPatch):
     assert pin_fn is not None
     pin_fn()
     assert calls == [(0, {2})]
+
+
+def test_default_intervals_step_through_the_payloads_100ms_cycle():
+    # V2/V3 expose a page once per 100 ms. An interval that is a multiple of 50 ms keeps
+    # every scan on the same phase of that cycle (#63), so each must be k*100 ms + r with
+    # r coprime to 100: then successive scans visit every phase.
+    import math
+
+    for interval in (*sweep_g1.DEFAULT_INTERVALS, *sweep_g1.SMOKE_INTERVALS):
+        r = round(interval * 1000) % 100
+        assert math.gcd(r, 100) == 1, interval

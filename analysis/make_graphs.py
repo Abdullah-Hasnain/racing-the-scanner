@@ -178,13 +178,27 @@ def g3_attack_conditions() -> bool:
 VARIANT_COLORS = {"v1": "#888", "v2": "#47a", "v3": "#a55", "v4": "#2a7"}
 
 
+def wilson_interval(catches: int, scans: int, z: float = 1.96) -> tuple[float, float]:
+    """95% Wilson score interval for catches / scans; stays inside [0, 1] at low n."""
+    if scans == 0:
+        return 0.0, 1.0
+    p = catches / scans
+    denom = 1 + z * z / scans
+    centre = (p + z * z / (2 * scans)) / denom
+    half = z * ((p * (1 - p) / scans + z * z / (4 * scans * scans)) ** 0.5) / denom
+    return max(0.0, centre - half), min(1.0, centre + half)
+
+
 def g1_summary(df: pd.DataFrame) -> pd.DataFrame:
-    """Median catch rate (catches / scans) and its IQR over reps, per variant, dwell and interval."""
+    """Catch rate per variant, dwell and interval, pooling every scan of the cell's reps
+    (sum(catches) / sum(scans)), with a 95% Wilson interval. At long intervals a run gets
+    only a handful of scans, so a median of per-run rates jumps between 0, 1/7 and 1/4."""
     df = df.assign(dwell_ms=df["dwell_ms"].fillna(0))  # V1/V4 have no dwell
-    g = df.groupby(["variant", "dwell_ms", "interval_s"])["catch_rate"]
-    out = g.median().to_frame()
-    out["q25"], out["q75"] = g.quantile(0.25), g.quantile(0.75)
-    return out.reset_index()
+    out = df.groupby(["variant", "dwell_ms", "interval_s"])[["catches", "scans"]].sum().reset_index()
+    out["catch_rate"] = out["catches"] / out["scans"]
+    bounds = [wilson_interval(c, n) for c, n in zip(out["catches"], out["scans"], strict=True)]
+    out["lo"], out["hi"] = [b[0] for b in bounds], [b[1] for b in bounds]
+    return out
 
 
 def g1_catch_rate() -> bool:
@@ -201,7 +215,7 @@ def g1_catch_rate() -> bool:
         rows = s[s["variant"] == v]
         for dwell, d in rows.groupby("dwell_ms"):
             ax.errorbar(d["interval_s"], d["catch_rate"],
-                        yerr=[(d["catch_rate"] - d["q25"]).clip(lower=0), (d["q75"] - d["catch_rate"]).clip(lower=0)],
+                        yerr=[(d["catch_rate"] - d["lo"]).clip(lower=0), (d["hi"] - d["catch_rate"]).clip(lower=0)],
                         marker="o", capsize=2, label=f"dwell {dwell:g} ms")
         for ref, style in (("v1", "--"), ("v4", ":")):
             r = s[s["variant"] == ref].groupby("interval_s")["catch_rate"].median()
@@ -212,7 +226,11 @@ def g1_catch_rate() -> bool:
         ax.set_xlabel("scan interval (s, log)")
         ax.set_ylim(-0.03, 1.03)
         ax.legend(fontsize=8)
-    axes[0][0].set_ylabel("catch rate (catches / scans, median, IQR bars)")
+    axes[0][0].set_ylabel("catch rate (all scans pooled, 95% Wilson bars)")
+    n = s.groupby("interval_s")["scans"].median()
+    fig.text(0.01, 0.01, "scans per cell (median over variants): "
+             + ", ".join(f"{i:g} s: {int(k)}" for i, k in n.items())
+             + ". Fewer scans at long intervals give wider bars, not a trend.", fontsize=7)
     fig.suptitle("G1: how often the RAM scanner catches the hidden marker", fontsize=11)
     fig.tight_layout()
     out = _save(fig, "G1_catch_rate.png")
