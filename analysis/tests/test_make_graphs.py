@@ -189,3 +189,80 @@ def test_results_csv_wins_over_captured(dirs, tmp_path):
     (res / "detection_g5.csv").write_text("x\n")
     assert mg._src("detection_g5.csv") == res / "detection_g5.csv"
     assert mg._src("missing.csv") is None
+
+
+def _g1_csv(path):
+    rows = []
+    for rep in range(3):
+        for interval in [0.05, 0.15, 0.5, 1.5, 5.0]:
+            for variant, dwells in [("v1", [0]), ("v2", [1, 5, 10, 25]), ("v3", [1, 5, 10, 25]), ("v4", [0])]:
+                for dwell in dwells:
+                    rate = {"v1": 1.0, "v4": 0.0}.get(variant, min(1.0, dwell / 100 + 0.01 * rep))
+                    rows.append(dict(run_id=f"r{rep}", rep=rep, variant=variant, dwell_ms=dwell,
+                                     interval_s=interval, pattern="seq", duration_s=10, scans=100,
+                                     catches=round(rate * 100), catch_rate=rate, miss_rate=1 - rate,
+                                     p50_scan_ms=1, p95_scan_ms=2, p99_scan_ms=3, max_entropy=5.6))
+    pd.DataFrame(rows).to_csv(path / "g1_scan.csv", index=False)
+
+
+def _g2_csv(path):
+    rows = []
+    for rep in range(3):
+        for variant, dwell, slow, evade, minflt in [("v1", 0, 1.0, 0.0, 0), ("v2", 1, 40.0, 0.95, 5000),
+                                                    ("v2", 25, 8.0, 0.6, 900), ("v3", 10, 20.0, 0.9, 3000),
+                                                    ("v4", 0, 1.1, 1.0, 2)]:
+            rows.append(dict(run_id=f"r{rep}", rep=rep, variant=variant, dwell_ms=dwell, pattern="seq",
+                             duration_s=5, accesses=1000, accesses_per_s=200, slowdown_vs_v1=slow + rep,
+                             faults=minflt, faults_per_s=minflt / 5, minflt=minflt, evasion_rate=evade,
+                             catch_rate=1 - evade, p95_scan_ms=2))
+    pd.DataFrame(rows).to_csv(path / "g2_pareto.csv", index=False)
+
+
+def test_g1_summary_is_median_catch_rate_per_variant_dwell_interval(dirs):
+    res, _ = dirs
+    _g1_csv(res)
+    s = mg.g1_summary(pd.read_csv(res / "g1_scan.csv")).set_index(["variant", "dwell_ms", "interval_s"])
+    assert s.loc[("v2", 10, 0.5), "catch_rate"] == pytest.approx(0.11)  # median of 0.10, 0.11, 0.12
+    assert s.loc[("v2", 10, 0.5), "q25"] == pytest.approx(0.105)
+    assert s.loc[("v1", 0, 5.0), "catch_rate"] == 1.0
+
+
+def test_g1_writes_and_skips(dirs):
+    res, fig = dirs
+    assert mg.g1_catch_rate() is False
+    _g1_csv(res)
+    assert mg.g1_catch_rate() is True
+    assert _png(fig / "G1_catch_rate.png")
+
+
+def test_g2_pareto_front_keeps_only_undominated_points(dirs):
+    res, _ = dirs
+    _g2_csv(res)
+    s = mg.g2_summary(pd.read_csv(res / "g2_pareto.csv"))
+    front = s[s["pareto"]].set_index(["variant", "dwell_ms"])
+    # v4 evades everything at ~1x cost, so it dominates every V2/V3 setting
+    assert list(front.index) == [("v1", 0), ("v4", 0)]
+    assert s.set_index(["variant", "dwell_ms"]).loc[("v2", 1), "slowdown_vs_v1"] == 41.0  # median over reps
+    assert s.set_index(["variant", "dwell_ms"]).loc[("v2", 1), "minflt_per_s"] == 1000.0
+
+
+def test_g2_writes_and_skips_and_reads_captured(dirs, tmp_path):
+    _, fig = dirs
+    assert mg.g2_pareto() is False
+    cap = tmp_path / "captured"
+    cap.mkdir()
+    _g2_csv(cap)
+    assert mg.g2_pareto() is True
+    assert _png(fig / "G2_pareto.png")
+
+
+def test_g1_and_g2_keep_v1_v4_rows_with_an_empty_dwell(dirs):
+    res, _ = dirs
+    _g1_csv(res)
+    _g2_csv(res)
+    g1 = pd.read_csv(res / "g1_scan.csv")
+    g1.loc[g1["variant"].isin(["v1", "v4"]), "dwell_ms"] = None
+    g2 = pd.read_csv(res / "g2_pareto.csv")
+    g2.loc[g2["variant"].isin(["v1", "v4"]), "dwell_ms"] = None
+    assert {"v1", "v4"} <= set(mg.g1_summary(g1)["variant"])
+    assert {"v1", "v4"} <= set(mg.g2_summary(g2)["variant"])

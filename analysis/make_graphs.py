@@ -1,10 +1,8 @@
 """Build the figures G1-G6 from the CSVs in results/.
 
-CSVs that need root or a real kernel (coupled_live.csv, detection_g5.csv) fall
-back to their committed copies in captured/ when results/ has none. G3-G6 are
-wired; each skips with a clear message when its CSV is missing. G1
-and G2 are stubbed with a message naming the memory module whose results feed
-them.
+CSVs that need root or a real kernel (g1_scan.csv, g2_pareto.csv, coupled_live.csv,
+detection_g5.csv) fall back to their committed copies in captured/ when results/
+has none. Every figure skips with a clear message when its CSV is missing.
 
 Usage (see analysis/README.md):
   python -m sim.run_experiment --policies all          # results/aggregate_mimicry.csv
@@ -177,6 +175,104 @@ def g3_attack_conditions() -> bool:
     return True
 
 
+VARIANT_COLORS = {"v1": "#888", "v2": "#47a", "v3": "#a55", "v4": "#2a7"}
+
+
+def g1_summary(df: pd.DataFrame) -> pd.DataFrame:
+    """Median catch rate (catches / scans) and its IQR over reps, per variant, dwell and interval."""
+    df = df.assign(dwell_ms=df["dwell_ms"].fillna(0))  # V1/V4 have no dwell
+    g = df.groupby(["variant", "dwell_ms", "interval_s"])["catch_rate"]
+    out = g.median().to_frame()
+    out["q25"], out["q75"] = g.quantile(0.25), g.quantile(0.75)
+    return out.reset_index()
+
+
+def g1_catch_rate() -> bool:
+    """G1: per-scan catch rate vs scan interval, one panel per hiding variant, one line per dwell."""
+    src = _src("g1_scan.csv")
+    if src is None:
+        print("[G1] skip: needs g1_scan.csv from the memory G1 sweep (#4)")
+        return False
+    s = g1_summary(pd.read_csv(src))
+    hiders = [v for v in ("v2", "v3") if v in set(s["variant"])]
+    fig, axes = plt.subplots(1, max(len(hiders), 1), figsize=(6 * max(len(hiders), 1), 4.5),
+                             sharey=True, squeeze=False)
+    for ax, v in zip(axes[0], hiders, strict=False):
+        rows = s[s["variant"] == v]
+        for dwell, d in rows.groupby("dwell_ms"):
+            ax.errorbar(d["interval_s"], d["catch_rate"],
+                        yerr=[d["catch_rate"] - d["q25"], d["q75"] - d["catch_rate"]],
+                        marker="o", capsize=2, label=f"dwell {dwell:g} ms")
+        for ref, style in (("v1", "--"), ("v4", ":")):
+            r = s[s["variant"] == ref].groupby("interval_s")["catch_rate"].median()
+            if len(r):
+                ax.plot(r.index, r.values, style, color=VARIANT_COLORS[ref], label=f"{ref.upper()} (reference)")
+        ax.set_xscale("log")
+        ax.set_title(v.upper())
+        ax.set_xlabel("scan interval (s, log)")
+        ax.set_ylim(-0.03, 1.03)
+        ax.legend(fontsize=8)
+    axes[0][0].set_ylabel("catch rate (catches / scans, median, IQR bars)")
+    fig.suptitle("G1: how often the RAM scanner catches the hidden marker", fontsize=11)
+    fig.tight_layout()
+    out = _save(fig, "G1_catch_rate.png")
+    print(f"[G1] wrote {out}")
+    return True
+
+
+def g2_summary(df: pd.DataFrame) -> pd.DataFrame:
+    """Median slowdown, evasion and minor faults/s per variant and dwell, with the Pareto front.
+
+    A setting is on the front when no other setting is at least as cheap for the
+    attacker (slowdown vs V1) and at least as evasive, and strictly better in one.
+    """
+    df = df.assign(minflt_per_s=df["minflt"] / df["duration_s"], dwell_ms=df["dwell_ms"].fillna(0))
+    s = df.groupby(["variant", "dwell_ms"])[["slowdown_vs_v1", "evasion_rate", "minflt_per_s"]].median()
+    s = s.reset_index()
+    slow, ev = s["slowdown_vs_v1"].to_numpy(), s["evasion_rate"].to_numpy()
+    s["pareto"] = [
+        not any((slow[j] <= slow[i]) and (ev[j] >= ev[i]) and (slow[j] < slow[i] or ev[j] > ev[i])
+                for j in range(len(s)))
+        for i in range(len(s))
+    ]
+    return s
+
+
+def g2_pareto() -> bool:
+    """G2: the attacker's cost (slowdown vs V1) against what it buys (evasion), plus page faults."""
+    src = _src("g2_pareto.csv")
+    if src is None:
+        print("[G2] skip: needs g2_pareto.csv from the memory G2 sweep (#5)")
+        return False
+    s = g2_summary(pd.read_csv(src))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 4.8), gridspec_kw={"width_ratios": [3, 2]})
+    for v, d in s.groupby("variant"):
+        ax1.scatter(d["slowdown_vs_v1"], d["evasion_rate"], color=VARIANT_COLORS.get(v, FALLBACK_BLUE),
+                    s=60, label=v.upper(), zorder=3)
+        for _, r in d.iterrows():
+            if r["dwell_ms"]:
+                ax1.annotate(f"{r['dwell_ms']:g} ms", (r["slowdown_vs_v1"], r["evasion_rate"]),
+                             textcoords="offset points", xytext=(5, 4), fontsize=7)
+    front = s[s["pareto"]].sort_values("slowdown_vs_v1")
+    ax1.step(front["slowdown_vs_v1"], front["evasion_rate"], where="post", color="black", lw=0.8,
+             label="Pareto front")
+    ax1.set_xscale("log")
+    ax1.set_xlabel("attacker slowdown vs V1 (x, log)")
+    ax1.set_ylabel("evasion rate (1 - catch rate, scanner every 37 ms)")
+    ax1.set_ylim(-0.03, 1.03)
+    ax1.legend(fontsize=8)
+    labels = [f"{v.upper()} {d:g}ms" if d else v.upper() for v, d in zip(s["variant"], s["dwell_ms"], strict=True)]
+    ax2.bar(range(len(s)), s["minflt_per_s"], color=[VARIANT_COLORS.get(v, FALLBACK_BLUE) for v in s["variant"]])
+    ax2.set_xticks(range(len(s)), labels, rotation=45, ha="right", fontsize=8)
+    ax2.set_ylabel("minor page faults per second (median)")
+    ax2.set_yscale("symlog")
+    fig.suptitle("G2: what hiding costs the attacker", fontsize=11)
+    fig.tight_layout()
+    out = _save(fig, "G2_pareto.png")
+    print(f"[G2] wrote {out}")
+    return True
+
+
 def _series(row: pd.Series) -> tuple[str, str]:
     """(style key, legend label) for a G5 row, or ("", "") for an excluded one."""
     if row["detector"] != "ai":
@@ -292,14 +388,10 @@ def g6_overhead() -> bool:
     return True
 
 
-def _stub(tag: str, needs: str) -> None:
-    print(f"[{tag}] skip: needs results from {needs}")
-
-
 def main() -> int:
     g4_policy_comparison()
-    _stub("G1", "memory/scanner (catch rate vs scan interval)")
-    _stub("G2", "memory payloads (slowdown vs evasion Pareto)")
+    g1_catch_rate()
+    g2_pareto()
     g3_attack_conditions()
     g5_detection()
     g6_overhead()
