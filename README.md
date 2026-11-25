@@ -120,6 +120,6 @@ The systems pieces (C payloads, the scanner, Tracee, any real `scx` work) need *
 
 - **Simulation (`sim/`):** done. 15 ML policies, the standard reservations and the invariant, ROC-AUC with IQR, and the four G3 attack conditions. Headline: every ML policy is evaded under mimicry; every reservation keeps the monitor scheduled.
 - **Real kernel:** the sched_ext spike passes on kernel 7.0 and the `scx_qmap` per-PID weight demo runs (#10, #11). The coupled attack on the real kernel (`detection/coupled_live.py`) shows stock EEVDF starving the scanner and `cpu.weight` / `SCHED_FIFO` protecting it.
-- **Memory (`memory/`):** V1-V4 payloads and the live scanner. G1/G2 sweeps are in progress (#4, #5; spec in #38).
+- **Memory (`memory/`):** V1-V4 payloads, the live scanner, and the G1/G2 sweeps (`memory/sweep_g1.py`, `sweep_g2.py`). The final runs on bare metal are in `captured/` (#56). Per-scan catch rate is about dwell / 100 ms for V2/V3, at any scan interval; a longer interval only delays the first catch.
 - **Detection (`detection/`):** Tracee policy, aggregator, LLM triage, benign suite and the G5 harness. On the held-out capture the custom rule catches 15/15 hiding processes with 0/30 false alarms; Tracee's default signatures catch 0/15.
-- **Figures:** G3-G6 build from `results/` or `captured/`; G1/G2 wait on the memory sweeps. The whole-team plan is the wayfinder map, issue #37.
+- **Figures:** all six, G1-G6, build on a fresh clone with `scripts/run_demo.sh`, from `results/` or the committed `captured/` data (#16). Remaining work (the report, #60, and the slides, #61) is tracked in milestone M5.
