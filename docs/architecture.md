@@ -181,7 +181,8 @@ The unsupervised boost is given by role and kept by behavior. The scheduler
 knows which process is the monitor, but a window that the detector flags is
 demoted x0.1 instead, so each false positive on the monitor costs it a tick.
 The boost is a multiplier, not a reservation: a hog that is not demoted still
-outweighs it. Only S3 guarantees a share. Demand and multipliers are not
+outweighs it. Only a reservation guarantees a share: the invariant (S3) or a
+standard Linux one (S4; see "Standard reservation baselines"). Demand and multipliers are not
 observed features, so the #6 calibration still holds; `python -m sim.calibrate`
 picks the same values. `sim/tests/test_scenario.py` guards all of this.
 

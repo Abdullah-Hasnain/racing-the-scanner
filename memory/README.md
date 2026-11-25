@@ -70,7 +70,7 @@ Unless `--no-csv` is set (recommended for external harnesses that `SIGKILL` the 
 - `scanner_scans.csv` (flushed per scan): `run_id`, `variant`, `pid`, `interval_s`, `dwell_ms`, `scan`, `elapsed_s`, `found`, `marker_found`, `entropy_flagged`, `max_entropy`, `high_entropy_pages`, `pages_scanned`, `bytes_scanned`, `scan_ms`, plus cumulative `p50_scan_ms`, `p95_scan_ms`, and `p99_scan_ms`.
 - `scanner_summary.csv` (1 row per completed run with `scans > 0`): `run_id`, `variant`, `pid`, `interval_s`, `dwell_ms`, `duration_s`, `elapsed_s`, `entropy_threshold`, `scans`, `catches`, `marker_catches`, `entropy_catches`, `catch_rate` (G1), `miss_rate` (G2), `scans_per_s`, `mean_scan_ms`, `p50_scan_ms`, `p95_scan_ms`, `p99_scan_ms`, and `max_entropy`.
 
-The scanner reports catch rate and `p50`/`p95`/`p99` scan latency. V1 should be ~100%. V2/V3 fall as the scan interval grows or dwell time shrinks (that is G1). V4 should be ~0% from the RAM scanner: it is the case only Tracee's syscall view (Ibad) can flag.
+The scanner reports catch rate and `p50`/`p95`/`p99` scan latency. V1 should be ~100%. V2/V3 are caught on about the fraction of scans that land in an exposure window, so their per-scan catch rate falls as the dwell time shrinks but does not depend on the scan interval; a longer interval only delays the first catch (G1; see #63, where intervals that were multiples of 50 ms phase-locked to the payload's 100 ms cycle and made it look interval-dependent). V4 should be ~0% from the RAM scanner: it is the case only Tracee's syscall view (Ibad) can flag.
 
 ## G1 Sweep (`sweep_g1.py`)
 
