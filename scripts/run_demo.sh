@@ -58,7 +58,7 @@ if [ "$LIVE" = 1 ]; then
   run_dir=$(ls -td results/g5/*/ | head -1)
   "$PY" detection/g5_capture.py score "$run_dir"
 
-  echo "(G1/G2 have no live sweep yet: they draw once memory/ writes g1_scan.csv and g2_pareto.csv, #4/#5.)"
+  echo "(G1/G2 are not re-run here: memory/sweep_g1.py and sweep_g2.py take ~40 min as root; their final runs are in captured/, #56.)"
 fi
 
 echo "== figures =="
