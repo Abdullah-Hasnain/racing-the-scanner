@@ -77,11 +77,14 @@ def triage(rec: dict, timeout: float = 20.0) -> dict:
         )
         r.raise_for_status()
         out = json.loads(r.json()["response"])
-        verdict = str(out.get("verdict", "benign")).strip().lower()  # models echo "SUSPICIOUS"
-        return {"verdict": verdict, "reason": out.get("reason", "")}
+        verdict = str(out.get("verdict", "")).strip().lower()  # models echo "SUSPICIOUS"
+        if verdict not in ("benign", "suspicious"):  # e.g. "malicious": don't read it as benign
+            raise ValueError(f"off-schema verdict {verdict!r}")
+        return {"verdict": verdict, "reason": out.get("reason", ""), "source": "llm"}
     except Exception as exc:  # unreachable, timeout, or bad JSON
         res = _heuristic(rec)
         res["reason"] += f" [{type(exc).__name__}]"
+        res["source"] = "heuristic"
         return res
 
 

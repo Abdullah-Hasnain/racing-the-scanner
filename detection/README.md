@@ -36,14 +36,31 @@ transition. The `security_file_mprotect` LSM event has both `prot` and
 
 | feature | flip | typical of |
 |---|---|---|
-| `none_rw_flips` | to or from PROT_NONE, whatever the other side | V2-style hiding (unlock, re-lock) |
+| `none_rw_flips` | to or from PROT_NONE, whatever the other side | V2 hiding, but also runtime heap commits and guard pages |
+| `relock_trips` | a region (same `addr`, `len`) unlocked from PROT_NONE, then locked again | V2-style hiding (unlock, re-lock) |
 | `rw_rx_flips` | write access swapped for exec, or back (RW to RX, RX to RW), neither side PROT_NONE | a JIT (V8, the benign stub) |
 
 `none_rw_flips` counts any access on the other side (R, RW, RX, RWX), so a hider
 cannot dodge it by unlocking with exec or read-only access. The cost is overlap
 with benign apps: guard pages (Go, Java) and polling pages (older JVM safepoints)
-also flip to and from PROT_NONE. Measuring that overlap is G5's job, and the
-triage weighs the counts instead of treating one flip as a verdict.
+also flip to and from PROT_NONE. On the first G5 capture node made 158 and the
+JVM 1,413 such flips.
+
+What separates hiding is the round trip: V2 unlocks a page and later locks the
+same page again. `relock_trips` counts regions (same `addr` and `len`) unlocked
+from PROT_NONE and then locked again. On that capture V2 made 200, node and the
+JVM 0. The `custom` detector and the heuristic use `relock_trips`, not raw flips.
+Limits of `relock_trips`:
+- A hider that relocks with a different `addr` or `len` than it unlocked with
+  (say, the whole buffer at once) is not counted, though raw flips would catch
+  it. Exact matching is deliberate: V8 unlocks pieces of a region and later
+  locks the whole region, and overlap matching would count that.
+- Tracee's stream is not strictly time-ordered across CPUs. A lock then unlock
+  of one region that arrives reversed reads as a trip; so can an address reused
+  after `munmap`, since the unlocked set is never cleared. Neither showed up on
+  the 30 held-out benign processes.
+- The benign runtimes measured are Node 22, JDK 25 and Go 1.26. Older JVMs flip
+  a safepoint polling page to PROT_NONE and back, a benign round trip.
 
 Counts are per memory region (VMA), not per call: the kernel runs the LSM hook
 once for each VMA an mprotect call spans. V2 touches one page per call, so it is
@@ -63,7 +80,7 @@ Checked on a real capture (Tracee v0.24.1, kernel 7.0, 10 s, policy as shipped):
 
 | process | Tracee events | aggregator |
 |---|---|---|
-| `v2 --dwell-ms 10 --interval-ms 50` | 200 unlocks `''` to `PROT_READ\|PROT_WRITE`, 201 locks back to `PROT_NONE` | `none_rw_flips` 401, `rw_rx_flips` 0 |
+| `v2 --dwell-ms 10 --interval-ms 50` | 200 unlocks `''` to `PROT_READ\|PROT_WRITE`, 201 locks back to `PROT_NONE` | `none_rw_flips` 401, `relock_trips` 200, `rw_rx_flips` 0 |
 | `run_benign.py --stub` | 9343 RW to RX and 9343 RX to RW, `prev_prot` carrying `PROT_SEM` (VM_SHARED) | `none_rw_flips` 0, `rw_rx_flips` 18686 |
 
 V2 made 200 faults and 200 re-locks, plus the initial whole-buffer lock: 401.
@@ -128,6 +145,77 @@ cannot name an event set (`event: default` is rejected as "not valid").
   With `scope: global` it writes about 1 MB/s. Stop it with Ctrl-C.
 - The output file is owned by root and world-readable.
 
+## Coupled attack on the real kernel
+
+`coupled_live.py` runs the reservation half of the simulation's claim on real
+Linux (#15), in the simulation's four G3 conditions. The attacker shares one
+core with the live RAM scanner and claims nice -20, as the simulation's attacker
+claims a high priority:
+
+| condition | attacker |
+|---|---|
+| `none` | V1, which never hides its marker |
+| `starvation` | V1 plus 4 CPU hogs |
+| `hiding` | V2, which hides its marker except for 10 ms per 100 ms |
+| `coupled` | V2 plus 4 CPU hogs |
+
+The hogs start after the scanner's first scan, since a monitor is already
+running when an attack begins, and only the scans in the next 20 s count.
+Policies for the scanner: `eevdf` (stock, no reservation), `cgroup_weight`
+(alone in a cgroup with cpu.weight 10000 vs the attacker's 100) and
+`sched_fifo` (SCHED_FIFO 10). The ML policies exist only in the simulation.
+It needs root. The real-kernel half of G3 is drawn from the CSV by #33:
+
+```bash
+make -C memory
+pkexec "$PWD/.venv/bin/python" "$PWD/detection/coupled_live.py" --repo "$PWD"
+# the equal-nice control row (3 reps):
+pkexec "$PWD/.venv/bin/python" "$PWD/detection/coupled_live.py" --repo "$PWD" \
+  --attacker-nice 0 --conditions coupled --policies eevdf --out results/coupled_live_equal_nice.csv
+```
+
+A cell fails loudly, rather than recording a starved-looking row, if the scanner
+never scans or stops early, or the attacker exits early. Rows are written as
+each cell finishes, and every child dies with the harness.
+
+Kernel 7.0.0-44, Intel Core i7-14700F (bare metal), pinned to CPU 2 (a P-core),
+3 reps of 20 s per cell, at commit 0fde0f5 (run `20261125-151359`; equal-nice row
+`20261125-152640`). The scanner sleeps 37 ms between scans, which does not divide
+V2's 100 ms period, so scans sample its whole cycle.
+
+| condition | policy | scans/s | scans that caught the attacker |
+|---|---|---|---|
+| none | all three | 26.75 to 26.8 | 535 to 536 (every scan) |
+| starvation | eevdf | 2.6 to 3.15 | 52 to 63 (every scan) |
+| starvation | cgroup_weight, sched_fifo | 26.85 to 26.9 | 537 to 538 |
+| hiding | all three | 26.75 to 26.85 | 52 to 59 |
+| coupled | eevdf | 4.2 to 4.75 | 15 to 17 |
+| coupled | cgroup_weight, sched_fifo | 26.9 to 26.95 | 50 to 55 |
+| coupled, attacker at nice 0 | eevdf | 26.55 | 56 to 62 |
+
+- The scanner loses CPU only when the attacker hogs, and only under stock
+  EEVDF: about 89% of its scans under starvation, about 83% under the coupled
+  attack (catches down about 70% against hiding alone). Either reservation keeps
+  every condition at the no-attack level, without judging any process.
+- Hiding alone costs the scanner no scans; it only means about 10% of scans
+  land in V2's exposure window.
+- Under the coupled attack, catches fall less than scans because the scans that
+  do run catch V2 more often (16 to 18% of scans, 15/94 to 17/95, against 10%).
+  That is observed, not explained; sharing a core with V2 may bunch the
+  scanner's turns around V2's wakeups. If so, the starved scanner's catches are
+  inflated, and the catch loss under the coupled attack is a lower bound.
+- Scan time itself does not grow (p95 at most 0.42 ms in any cell); the
+  starvation is the scanner waiting longer for its turn between scans.
+- At equal nice the hogs do not starve the scanner (last row,
+  `results/coupled_live_equal_nice.csv`). The attack needs the claimed priority.
+- V2 made 210 to 215 faults in every cell, so the hogs did not slow the hider.
+- An earlier run of the same grid (pre-#45 scanner, harness not pinned) lost less
+  under EEVDF: 6.0 to 6.2 scans/s under starvation and 10.8 to 11.0 under the
+  coupled attack, with every reservation row the same as here. Between the two
+  runs the scanner changed (#45/#49: chunked reads, no file-backed mappings,
+  per-scan percentiles) and the harness moved off the measured core; which one
+  moved the EEVDF rows is not established. The conclusion does not change.
+
 ## Benign suite
 
 `benign/run_benign.py` runs the legitimate workloads (Node.js, Go/Java GC,
@@ -142,6 +230,56 @@ python3 detection/benign/run_benign.py --stub
 Compiled workloads are built first, so no compiler runs in the measured
 process. Tracee's `processName` for each is `node`, `gcstress`, `java` (plus JVM
 thread names such as `G1 Conc#0`), `malloc_churn`, and `python3` for `sqlite`.
+
+## G5 harness
+
+`python -m detection.harness` scores three detectors on the same labelled
+processes of one Tracee capture and appends one row per detector to
+`$RTS_RESULTS_DIR/detection_g5.csv`:
+
+| detector | fires when |
+| --- | --- |
+| `default_sigs` | Tracee's own signatures fired: `tracee_alerts` > 0 |
+| `custom` | custom-policy rule: `relock_trips` >= 1, `n_userfaultfd` >= 1 or `n_memfd_secret` >= 1 |
+| `ai` | triage verdict is "suspicious" (LLM, or the heuristic with `--no-llm`) |
+
+Only the `ai` row fills `triage_backend` and `triage_ms_mean` (mean wall-clock
+ms per triage call over the labelled records, for G6). If any record fell back
+to the heuristic the backend reads `llm-fallback:<model>` rather than
+`llm:<model>`. Detectors live in the `DETECTORS` table in `harness.py`.
+
+Score each capture once. `default_sigs` and `custom` don't depend on the
+triage backend, so scoring the same capture twice (say `--no-llm`, then with
+the LLM) appends duplicate rows for them, and G5 pools rows by summing. The
+harness refuses to append to a `detection_g5.csv` with an older column layout;
+move that file aside first.
+
+## G5 capture
+
+`g5_capture.py` reproduces the G5 numbers. `capture` (root) starts Tracee
+v0.23.2 with both policies and runs 5 batches. Each batch runs the benign
+workloads for 40 s and, from +10 s, V2 (a different timing each batch), V3 and
+V4 for 20 s. It records every process per batch, then restores the userfaultfd
+sysctl. Workloads and attackers run as you, not root. `score` scores each batch
+with the harness and skips any batch already in `detection_g5.csv`, so running
+it twice doesn't duplicate rows (move that file aside to re-score).
+
+The capture stops, naming the workload, if a launcher has exited or its deepest
+process isn't the expected program (`node`, `gcstress`, `java`, `malloc_churn`,
+`python`, `v2`-`v4`) when the batch is recorded. SIGTERM and SIGHUP clean up
+like Ctrl-C, and Tracee and the workloads die with the capture.
+
+```bash
+make -C memory
+pkexec "$PWD/.venv/bin/python" "$PWD/detection/g5_capture.py" capture --repo "$PWD"
+.venv/bin/python detection/g5_capture.py score results/g5/<run_id>
+```
+
+Needs node, go and java on pkexec's PATH, which is the system one, not your
+shell's: install them from apt (`/usr/bin`), not nvm, sdkman or `~/go`. Also
+needs Tracee v0.23.2 in
+`~/tracee/v0.23.2`. The Tracee log is about 2.5 GB for 5 batches and goes to
+`~/tracee/out/`, outside the repo.
 
 ## First issues
 

@@ -175,3 +175,18 @@ def test_process_is_named_by_its_main_thread_not_its_workers():
     f = features(lines)
     assert f[50]["comm"] == "node"
     assert f[60]["comm"] == "HeapHelper"
+
+
+def test_decimal_string_length_matches_the_same_region():
+    # A hand-written fixture may quote len in decimal; "4096" is 4096, not 0x4096.
+    lines = [
+        mprotect_event(7, "", "PROT_READ|PROT_WRITE", length="4096"),  # unlock
+        mprotect_event(7, "PROT_READ|PROT_WRITE", "", length=4096),    # relock
+    ]
+    assert features(lines)[7]["relock_trips"] == 1
+
+
+def test_null_metadata_is_not_an_alert():
+    line = json.dumps({"processId": 7, "processName": "v2", "eventName": "madvise",
+                       "args": [], "metadata": None})
+    assert features([line])[7]["tracee_alerts"] == 0
