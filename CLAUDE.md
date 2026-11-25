@@ -49,6 +49,8 @@ Respect module boundaries; flag cross-area changes on the issue first.
   import-guarded (see `sim/policies/autoencoder.py`).
 - Do not commit `data/`, `results/`, `figures/`, model weights, or `.env` (all
   gitignored).
+  The one exception is `captured/`: the small scored CSVs for the root-only
+  figures, so `scripts/run_demo.sh` draws everything on a fresh clone (#44).
 
 ## Commit and PR messages
 

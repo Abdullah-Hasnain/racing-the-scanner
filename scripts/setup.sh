@@ -17,4 +17,4 @@ echo "== unit tests =="
 python -m pytest -q
 echo
 echo "Ready. Activate with: source .venv/bin/activate"
-echo "Full sweep: python -m sim.run_experiment --policies all"
+echo "Full sweep and figure: scripts/run_demo.sh"
