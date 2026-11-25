@@ -71,3 +71,21 @@ Unless `--no-csv` is set (recommended for external harnesses that `SIGKILL` the 
 - `scanner_summary.csv` (1 row per completed run with `scans > 0`): `run_id`, `variant`, `pid`, `interval_s`, `dwell_ms`, `duration_s`, `elapsed_s`, `entropy_threshold`, `scans`, `catches`, `marker_catches`, `entropy_catches`, `catch_rate` (G1), `miss_rate` (G2), `scans_per_s`, `mean_scan_ms`, `p50_scan_ms`, `p95_scan_ms`, `p99_scan_ms`, and `max_entropy`.
 
 The scanner reports catch rate and `p50`/`p95`/`p99` scan latency. V1 should be ~100%. V2/V3 fall as the scan interval grows or dwell time shrinks (that is G1). V4 should be ~0% from the RAM scanner: it is the case only Tracee's syscall view (Ibad) can flag.
+
+## G1 Sweep (`sweep_g1.py`)
+
+`memory/sweep_g1.py` sweeps scan intervals (`0.05`, `0.15`, `0.5`, `1.5`, `5.0` s) and dwell times (`1`, `5`, `10`, `25` ms for `v2`/`v3`; `v1`/`v4` have empty `dwell_ms`) across the compiled payloads and writes one row per run/rep to `$RTS_RESULTS_DIR/g1_scan.csv` (default `<repo>/results/g1_scan.csv`):
+
+```bash
+python3 -m memory.sweep_g1 --smoke   # quick WSL/local verification
+sudo python3 -m memory.sweep_g1       # full #38 sweep on Linux
+```
+
+Key flags:
+- `--intervals <sec ...>`, `--dwell-ms <ms ...>`, `--reps <int>`: override the default grid (`0.05 0.15 0.5 1.5 5.0` s, `1 5 10 25` ms, `3` reps).
+- `--cpu <int>` / `--no-pin`: pin both payload and scanner to one core (default `0` on Linux via `sched_setaffinity`).
+- `--resume`: skip `(variant, dwell_ms, interval_s, rep)` cells already present in `g1_scan.csv`.
+- `--with-entropy`: enable the per-page Shannon-entropy pass (disabled by default via `--no-entropy` for tight scan timing).
+- `--strict`: abort instead of skipping `v4` if `memfd_secret` (`secretmem.enable=1`) is unavailable.
+
+Output columns in `results/g1_scan.csv`: `run_id`, `rep`, `variant`, `dwell_ms`, `interval_s`, `pattern`, `duration_s`, `scans`, `catches`, `catch_rate`, `miss_rate`, `p50_scan_ms`, `p95_scan_ms`, `p99_scan_ms`, `max_entropy`. When run as root with `v3`, the harness temporarily flips `/proc/sys/vm/unprivileged_userfaultfd` to `1` and restores it on exit, and restores `g1_scan.csv` ownership to the `sudo`/`pkexec` caller.
