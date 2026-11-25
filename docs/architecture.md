@@ -143,9 +143,17 @@ can separate it.
 - `naive_bayes`: per-class independent Gaussians.
 
 **Overhead.** `run_once` pins BLAS/OpenMP to one thread, and the estimators set
-`n_jobs=1`. `overhead_ms` is therefore the single-core cost of a decision,
-summed over a run. Without the pin, OpenMP thread wake-ups inflated `histgb`
-about 10x (13 ms to 1 ms per decision).
+`n_jobs=1`. Both policy steps are timed, each summed over a run: `decide_ms` is
+`multipliers`, where the ML policies run their models, and `allocate_ms` is
+`allocate`, where the reservations and the invariant do their work.
+`overhead_ms` is their sum, the single-core cost of a policy's decisions, and is
+what G6a plots. `allocate` is timed too, so a reservation's cost is measured
+rather than zero by construction. It is still Python modelling what the kernel
+enforces: a real cgroup or `SCHED_FIFO` reservation costs about nothing per
+decision. Every G6a bar is single-core Python time in the simulator, so the
+comparison is internally fair and, if anything, overstates the reservations'
+real cost. Without the pin, OpenMP thread wake-ups inflated `histgb` about 10x
+(13 ms to 1 ms per decision).
 
 ### Scenario balance (#7)
 

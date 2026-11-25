@@ -68,7 +68,9 @@ class SimResult:
     mimicry: bool
     scan_latencies: list[float]
     monitor_share_mean: float
-    overhead_ms: float
+    overhead_ms: float                     # decide_ms + allocate_ms
+    decide_ms: float = float("nan")        # policy.multipliers, summed over the run
+    allocate_ms: float = float("nan")      # policy.allocate, summed over the run
     condition: str = "coupled"
     benign_share_mean: float = float("nan")  # all benign apps combined
     roc_auc: float = float("nan")          # attacker vs benign apps + monitor
@@ -93,6 +95,8 @@ class SimResult:
             "monitor_share": round(self.monitor_share_mean, 4),
             "benign_share": round(self.benign_share_mean, 4),
             "overhead_ms": round(self.overhead_ms, 3),
+            "decide_ms": round(self.decide_ms, 3),
+            "allocate_ms": round(self.allocate_ms, 3),
             "n_scans": int(np.sum(~np.isnan(lat))),
         }
 
@@ -166,18 +170,22 @@ def _run_once(policy: Policy, cfg: SimConfig) -> SimResult:
     ben_shares: list[float] = []
     is_benign = np.array([p.role == "benign" for p in procs])
     obs_log: list[np.ndarray] = []
-    overhead = 0.0
+    # Both policy steps are timed: the ML policies work in multipliers, the
+    # reservations and the invariant in allocate (#42).
+    decide_s = allocate_s = 0.0
 
     for t in range(cfg.ticks):
         obs = np.array([p.observe(rng) for p in procs])
         obs_log.append(obs)
         t0 = time.perf_counter()
         mult = policy.multipliers(procs, obs)
-        overhead += time.perf_counter() - t0
+        decide_s += time.perf_counter() - t0
 
         eff = np.clip(base_eff * mult, 1e-9, None)
         share = eff / eff.sum()
+        t0 = time.perf_counter()
         share = policy.allocate(share, procs, cfg)
+        allocate_s += time.perf_counter() - t0
         mon_shares.append(float(share[0]))
         ben_shares.append(float(share[is_benign].sum()))
 
@@ -198,7 +206,9 @@ def _run_once(policy: Policy, cfg: SimConfig) -> SimResult:
         mimicry=cfg.mimicry,
         scan_latencies=latencies,
         monitor_share_mean=float(np.mean(mon_shares)),
-        overhead_ms=overhead * 1000.0,
+        overhead_ms=(decide_s + allocate_s) * 1000.0,
+        decide_ms=decide_s * 1000.0,
+        allocate_ms=allocate_s * 1000.0,
         condition=cfg.condition,
         benign_share_mean=float(np.mean(ben_shares)),
         roc_auc=detection_auc(scores, roles, versus=("benign", "monitor")),

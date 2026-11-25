@@ -8,6 +8,7 @@ benign apps.
 from __future__ import annotations
 
 import importlib.util
+import time
 
 import numpy as np
 import pytest
@@ -121,3 +122,17 @@ def test_benign_share_is_reported_for_every_policy(name):
     res = run_once(policy, SimConfig(ticks=100, train_samples=120, seed=1)).summary()
     assert 0.0 < res["benign_share"] < 1.0
     assert res["benign_share"] + res["monitor_share"] <= 1.0 + 1e-9
+
+
+def test_allocate_is_timed_as_well_as_multipliers():
+    # A reservation does its work in allocate, so G6a has to time it (#42); before,
+    # only multipliers was timed and this policy's 2 ms per tick read as ~0.
+    class SlowAllocate(InvariantPolicy):
+        def allocate(self, shares, processes, cfg):
+            time.sleep(0.002)
+            return super().allocate(shares, processes, cfg)
+
+    res = run_once(SlowAllocate(), SimConfig(ticks=50, seed=3)).summary()
+    assert res["allocate_ms"] >= 0.9 * 50 * 2.0
+    assert res["decide_ms"] < res["allocate_ms"]
+    assert res["overhead_ms"] == pytest.approx(res["decide_ms"] + res["allocate_ms"], abs=0.002)
