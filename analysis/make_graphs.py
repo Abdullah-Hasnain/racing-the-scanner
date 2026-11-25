@@ -270,13 +270,18 @@ def g2_pareto() -> bool:
     for v, d in s.groupby("variant"):
         ax1.scatter(d["slowdown_vs_v1"], d["evasion_rate"], color=VARIANT_COLORS.get(v, FALLBACK_BLUE),
                     s=60, label=v.upper(), zorder=3)
+        left = v == "v2"  # V2 and V3 sit side by side, so label them on opposite sides
         for _, r in d.iterrows():
             if r["dwell_ms"]:
                 ax1.annotate(f"{r['dwell_ms']:g} ms", (r["slowdown_vs_v1"], r["evasion_rate"]),
-                             textcoords="offset points", xytext=(5, 4), fontsize=7)
-    front = s[s["pareto"]].sort_values("slowdown_vs_v1")
-    ax1.step(front["slowdown_vs_v1"], front["evasion_rate"], where="post", color="black", lw=0.8,
-             label="Pareto front")
+                             textcoords="offset points", xytext=(-7 if left else 7, -3),
+                             ha="right" if left else "left", fontsize=7)
+    # Ring the front's points rather than joining them: when V1 and V4 are the whole
+    # front they share x = 1, and a step line between them hides under their markers.
+    front = s[s["pareto"]]
+    ax1.scatter(front["slowdown_vs_v1"], front["evasion_rate"], s=220, facecolors="none",
+                edgecolors="black", linewidths=1.0, zorder=4,
+                label="Pareto front (no setting both cheaper and more evasive)")
     ax1.set_xscale("log")
     ax1.set_xlabel("attacker slowdown vs V1 (x, log)")
     ax1.set_ylabel("evasion rate (1 - catch rate, scanner every 37 ms)")
@@ -287,6 +292,7 @@ def g2_pareto() -> bool:
     ax2.set_xticks(range(len(s)), labels, rotation=45, ha="right", fontsize=8)
     ax2.set_ylabel("payload faults per second (median)")
     ax2.set_yscale("symlog")
+    ax2.set_ylim(0, max(1.0, s["faults_per_s"].max()) * 4)  # headroom above the tallest bar
     fig.suptitle("G2: what hiding costs the attacker", fontsize=11)
     fig.tight_layout()
     out = _save(fig, "G2_pareto.png")
@@ -390,7 +396,9 @@ def g6_overhead() -> bool:
         sched = sched.sort_values("overhead_ms")
         ax.barh(sched["policy"], sched["overhead_ms"], color=[GROUP_COLORS.get(g, FALLBACK_BLUE) for g in sched["group"]])
         ax.invert_yaxis()
-        ax.set_xlabel("policy compute time (decide + allocate), real wall-clock per run (ms)")
+        # log, so the reservations' few ms show next to the ML policies' hundreds
+        ax.set_xscale("log" if (sched["overhead_ms"] > 0).all() else "symlog")
+        ax.set_xlabel("policy compute time (decide + allocate), real wall-clock per run (ms, log)")
         ax.set_title("G6a: scheduler policy compute time")
         legend_handles = _group_legend(sched["group"])
     if triage is not None:

@@ -73,13 +73,14 @@ python analysis/make_graphs.py          # writes G1-G6 into figures/
 ```
 
 Or in one command, without activating the venv: `scripts/run_demo.sh` (run
-`scripts/setup.sh` first). It re-runs the simulation and draws G3-G6, and G1/G2
-once the memory sweeps (#4, #5) have written their CSVs; the
-data that needs root or a real kernel (the real-kernel G3 run and the Tracee G5
-capture) comes from the committed `captured/` folder. `scripts/run_demo.sh --live`
-also re-runs those captures on this machine (root via `pkexec`, plus Tracee
-v0.23.2, Ollama and the benign runtimes; see `detection/README.md`). The default
-run takes about 20-25 minutes, mostly the `--g3` sweep, and prints each step.
+`scripts/setup.sh` first). It re-runs the simulation and draws every figure, G1-G6.
+The data that needs root or a real kernel (the G1/G2 memory sweeps, the
+real-kernel G3 run and the Tracee G5 capture) comes from the committed
+`captured/` folder. `scripts/run_demo.sh --live` also re-runs the real-kernel G3
+run and the G5 capture on this machine (root via `pkexec`, plus Tracee v0.23.2,
+Ollama and the benign runtimes; see `detection/README.md`); the G1/G2 sweeps run
+on their own (see `memory/README.md`). The default run takes about 20-25 minutes,
+mostly the `--g3` sweep, and prints each step.
 
 Add `--no-mimicry` for the naive-hog control, `--condition none|hiding|starvation`
 for one half of the attack, or `--g3` to sweep every condition in both modes into
@@ -120,6 +121,6 @@ The systems pieces (C payloads, the scanner, Tracee, any real `scx` work) need *
 
 - **Simulation (`sim/`):** done. 15 ML policies, the standard reservations and the invariant, ROC-AUC with IQR, and the four G3 attack conditions. Headline: every ML policy is evaded under mimicry; every reservation keeps the monitor scheduled.
 - **Real kernel:** the sched_ext spike passes on kernel 7.0 and the `scx_qmap` per-PID weight demo runs (#10, #11). The coupled attack on the real kernel (`detection/coupled_live.py`) shows stock EEVDF starving the scanner and `cpu.weight` / `SCHED_FIFO` protecting it.
-- **Memory (`memory/`):** V1-V4 payloads and the live scanner. G1/G2 sweeps are in progress (#4, #5; spec in #38).
+- **Memory (`memory/`):** V1-V4 payloads, the live scanner, and the G1/G2 sweeps (`memory/sweep_g1.py`, `sweep_g2.py`). The final runs on bare metal are in `captured/` (#56). Per scan, the scanner catches a hiding page about as often as it is exposed, at any scan interval: about dwell / 100 ms for V2, and a few ms more for V3 (0.05 of scans at 1 ms dwell); a longer interval only delays the first catch.
 - **Detection (`detection/`):** Tracee policy, aggregator, LLM triage, benign suite and the G5 harness. On the held-out capture the custom rule catches 15/15 hiding processes with 0/30 false alarms; Tracee's default signatures catch 0/15.
-- **Figures:** G3-G6 build from `results/` or `captured/`; G1/G2 wait on the memory sweeps. The whole-team plan is the wayfinder map, issue #37.
+- **Figures:** all six, G1-G6, build on a fresh clone with `scripts/run_demo.sh`, from `results/` or the committed `captured/` data (#16). Remaining work (the report, #60, and the slides, #61) is tracked in milestone M5.
