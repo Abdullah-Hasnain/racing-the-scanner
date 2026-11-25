@@ -44,3 +44,18 @@ def test_llm_verdict_is_normalized(monkeypatch):
 
     monkeypatch.setattr(triage_llm.requests, "post", lambda *a, **kw: Reply())
     assert triage_llm.triage(rec(relock_trips=5))["verdict"] == "suspicious"
+
+
+def test_off_schema_llm_verdict_falls_back_to_the_heuristic(monkeypatch):
+    # "malicious" is not a verdict we asked for; it must not count as benign.
+    class Reply:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"response": json.dumps({"verdict": "malicious", "reason": "?"})}
+
+    monkeypatch.setattr(triage_llm.requests, "post", lambda *a, **kw: Reply())
+    out = triage_llm.triage(rec(relock_trips=5))
+    assert out["verdict"] == "suspicious"
+    assert out["reason"].startswith("heuristic fallback")
