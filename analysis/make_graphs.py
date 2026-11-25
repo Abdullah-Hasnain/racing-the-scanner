@@ -372,7 +372,7 @@ def g6_overhead() -> bool:
         sched = sched.sort_values("overhead_ms")
         ax.barh(sched["policy"], sched["overhead_ms"], color=[GROUP_COLORS.get(g, FALLBACK_BLUE) for g in sched["group"]])
         ax.invert_yaxis()
-        ax.set_xlabel("policy decision code, real wall-clock per run (ms)")
+        ax.set_xlabel("policy compute time (decide + allocate), real wall-clock per run (ms)")
         ax.set_title("G6a: scheduler policy compute time")
         legend_handles = _group_legend(sched["group"])
     if triage is not None:
@@ -381,12 +381,8 @@ def g6_overhead() -> bool:
         ax.set_ylabel("triage latency per process (ms, mean)")
         ax.set_title("G6b: AI triage overhead")
     if sched is not None:
-        fig.legend(handles=legend_handles, loc="lower center", bbox_to_anchor=(0.5, 0.04),
-                   ncol=5, fontsize=8, frameon=False)
-        fig.text(0.01, 0.01, "sim times only policy.multipliers, not policy.allocate: "
-                 "reservation policies and the invariant show ~0 by construction",
-                 fontsize=7, color="#555")
-    fig.tight_layout(rect=(0, 0.09, 1, 1))
+        fig.legend(handles=legend_handles, loc="lower center", ncol=5, fontsize=8, frameon=False)
+    fig.tight_layout(rect=(0, 0.05 if sched is not None else 0, 1, 1))
     out = _save(fig, "G6_overhead.png")
     print(f"[G6] wrote {out}")
     return True

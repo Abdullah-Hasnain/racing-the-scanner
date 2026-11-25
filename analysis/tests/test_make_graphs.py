@@ -137,6 +137,22 @@ def test_g6_sched_only_and_triage_only_and_both(dirs):
     assert mg.g6_overhead() is True
 
 
+def test_g6_omits_stale_zero_by_construction_footnote(dirs, monkeypatch):
+    res, fig = dirs
+    _mimicry_csv(res)
+    texts = []
+    orig_save = mg._save
+
+    def capture_save(figure, name):
+        texts.extend(t.get_text() for t in figure.texts)
+        return orig_save(figure, name)
+
+    monkeypatch.setattr(mg, "_save", capture_save)
+    assert mg.g6_overhead() is True
+    assert _png(fig / "G6_overhead.png")
+    assert not any("by construction" in t.lower() or "not policy.allocate" in t.lower() for t in texts)
+
+
 def _live_csv(res):
     rows = []
     for rep, (scans, catches) in enumerate([(200, 30), (240, 40), (220, 35)]):
