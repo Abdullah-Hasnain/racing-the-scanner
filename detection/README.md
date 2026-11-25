@@ -254,6 +254,33 @@ the LLM) appends duplicate rows for them, and G5 pools rows by summing. The
 harness refuses to append to a `detection_g5.csv` with an older column layout;
 move that file aside first.
 
+## G5 capture
+
+`g5_capture.py` reproduces the G5 numbers. `capture` (root) starts Tracee
+v0.23.2 with both policies and runs 5 batches. Each batch runs the benign
+workloads for 40 s and, from +10 s, V2 (a different timing each batch), V3 and
+V4 for 20 s. It records every process per batch, then restores the userfaultfd
+sysctl. Workloads and attackers run as you, not root. `score` scores each batch
+with the harness and skips any batch already in `detection_g5.csv`, so running
+it twice doesn't duplicate rows (move that file aside to re-score).
+
+The capture stops, naming the workload, if a launcher has exited or its deepest
+process isn't the expected program (`node`, `gcstress`, `java`, `malloc_churn`,
+`python`, `v2`-`v4`) when the batch is recorded. SIGTERM and SIGHUP clean up
+like Ctrl-C, and Tracee and the workloads die with the capture.
+
+```bash
+make -C memory
+pkexec "$PWD/.venv/bin/python" "$PWD/detection/g5_capture.py" capture --repo "$PWD"
+.venv/bin/python detection/g5_capture.py score results/g5/<run_id>
+```
+
+Needs node, go and java on pkexec's PATH, which is the system one, not your
+shell's: install them from apt (`/usr/bin`), not nvm, sdkman or `~/go`. Also
+needs Tracee v0.23.2 in
+`~/tracee/v0.23.2`. The Tracee log is about 2.5 GB for 5 batches and goes to
+`~/tracee/out/`, outside the repo.
+
 ## First issues
 
 - Build the end-to-end harness that runs an attacker + a benign app, captures
