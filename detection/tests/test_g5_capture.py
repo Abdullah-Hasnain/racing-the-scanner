@@ -1,5 +1,10 @@
 """A G5 batch scores the deepest process under each launcher, once (#13)."""
 
+import csv
+
+import pytest
+
+from detection import g5_capture as g5
 from detection.g5_capture import harness_args, scored_pids
 
 # label,pid,comm rows as a batch records them: each launcher's tree, parent first.
@@ -111,3 +116,70 @@ def test_module_imports_without_posix_only_modules():
                         "import sys; sys.modules['pwd'] = None\nimport detection.g5_capture"],
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+
+
+# --- one batch without root: stand-in workloads and attackers, real process handling ---
+
+import sys  # noqa: E402
+import time  # noqa: E402
+import types  # noqa: E402
+
+FAKE_BENIGN = """import sys, time
+if "--stub" not in sys.argv:
+    sys.exit(1)  # as run_benign.py does when a runtime isn't on PATH
+time.sleep(float(sys.argv[sys.argv.index("--seconds") + 1]))
+"""
+FAKE_ATTACKER = """import ctypes, signal, sys, time
+ctypes.CDLL(None).prctl(15, sys.argv[1].encode())  # PR_SET_NAME: look like v2/v3/v4
+signal.signal(signal.SIGINT, lambda *a: sys.exit(0))
+dur = float(sys.argv[sys.argv.index("--duration") + 1]) if "--duration" in sys.argv else 1e9
+end = time.monotonic() + dur
+while time.monotonic() < end:
+    time.sleep(0.02)
+"""
+
+
+@pytest.fixture
+def batch_repo(tmp_path, monkeypatch):
+    """A repo whose run_benign.py and memory/bin/v2..v4 are stand-ins, with short timings."""
+    (tmp_path / "detection/benign").mkdir(parents=True)
+    (tmp_path / "detection/benign/run_benign.py").write_text(FAKE_BENIGN)
+    (tmp_path / "attacker.py").write_text(FAKE_ATTACKER)
+    (tmp_path / "memory/bin").mkdir(parents=True)
+    for v in ("v2", "v3", "v4"):
+        b = tmp_path / "memory/bin" / v
+        b.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{tmp_path / "attacker.py"}" {v} "$@"\n')
+        b.chmod(0o755)
+    monkeypatch.setattr(g5, "_as_user", lambda user: None)
+    monkeypatch.setattr(g5, "BENIGN_S", 1)
+    monkeypatch.setattr(g5, "ATTACK_DELAY_S", 0)
+    monkeypatch.setattr(g5, "ATTACK_S", 1)
+    # long enough for the stand-ins to exec and rename themselves, never the real 5-20 s
+    monkeypatch.setattr(g5, "time", types.SimpleNamespace(sleep=lambda s: time.sleep(max(0, min(s, 0.4)))))
+    user = types.SimpleNamespace(pw_dir=str(tmp_path), pw_name="tester")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    def run(workloads: list[str]):
+        args = types.SimpleNamespace(repo=str(tmp_path), workloads=workloads)
+        g5._batch(args, 0, run_dir, user)
+
+    run.dir = run_dir
+    return run
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="needs Linux: /proc, process groups, prctl")
+def test_a_failed_batch_leaves_no_batch_file_to_score(batch_repo):
+    # "node" isn't on the stand-in's PATH, so its launcher exits 1: the capture stops,
+    # and score must find nothing for this batch.
+    with pytest.raises(SystemExit, match="benign:node exited"):
+        batch_repo(["node"])
+    assert not (batch_repo.dir / "batch_0.csv").exists()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="needs Linux: /proc, process groups, prctl")
+def test_a_finished_batch_records_every_label(batch_repo):
+    batch_repo([])
+    with (batch_repo.dir / "batch_0.csv").open() as f:
+        labels = {r["label"] for r in csv.DictReader(f)}
+    assert labels == {"benign:jit-stub", "attacker:v2", "attacker:v3", "attacker:v4"}

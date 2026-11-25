@@ -190,10 +190,6 @@ def _batch(args: argparse.Namespace, i: int, run_dir: Path, user: pwd.struct_pas
         time.sleep(5)
         rows = [{"label": label, "pid": pid, "comm": _comm(pid)}
                 for label, p in roots.items() for pid in _descendants(p.pid)]
-        with open(run_dir / f"batch_{i}.csv", "w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=["label", "pid", "comm"])
-            w.writeheader()
-            w.writerows(rows)
         if problems := batch_problems(rows, {label: p.poll() for label, p in roots.items()}):
             sys.exit(f"batch {i} can't be scored (is node/go/java on pkexec's PATH?):\n  "
                      + "\n  ".join(problems))
@@ -204,6 +200,12 @@ def _batch(args: argparse.Namespace, i: int, run_dir: Path, user: pwd.struct_pas
             p.wait()
     finally:
         _stop(roots.values())
+    # Only a batch that passed its check and ran to the end is written, so score
+    # never finds a broken or interrupted one.
+    with open(run_dir / f"batch_{i}.csv", "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["label", "pid", "comm"])
+        w.writeheader()
+        w.writerows(rows)
 
 
 def capture(args: argparse.Namespace) -> int:
@@ -225,6 +227,7 @@ def capture(args: argparse.Namespace) -> int:
     uffd = UFFD_SYSCTL.read_text().strip()
     UFFD_SYSCTL.write_text("1")  # V3 runs as the user
     tracee = None
+    completed = 0
     try:
         cmd = [tracee_bin, *(a for p in POLICIES for a in ("--policy", str(Path(args.repo) / p))),
                "--install-path", "/tmp/tracee-install",
@@ -239,21 +242,30 @@ def capture(args: argparse.Namespace) -> int:
             time.sleep(1)
         time.sleep(15)  # let Tracee finish attaching
         for i in range(args.batches):
+            if tracee.poll() is not None:
+                sys.exit(f"Tracee exited during the capture; see {run_dir / 'tracee.stderr'}")
             _batch(args, i, run_dir, user)
+            completed += 1
             print(f"batch {i} done ({V2_TIMINGS[i % len(V2_TIMINGS)]})", flush=True)
     finally:
-        if tracee is not None:
-            tracee.send_signal(signal.SIGINT)
-            try:
-                tracee.wait(timeout=60)
-            except subprocess.TimeoutExpired:
-                tracee.kill()
-        UFFD_SYSCTL.write_text(uffd)
-        (run_dir / "capture.json").write_text(json.dumps({"tracee_log": str(log), "batches": args.batches}))
-        for p in run_dir.iterdir():
-            _hand_back(p, Path(args.repo), user)
-        _hand_back(log, Path(user.pw_dir), user)
-    print(f"captured {args.batches} batches into {log}; score with:\n"
+        try:  # a second Ctrl-C while Tracee flushes must not skip the restore below
+            if tracee is not None:
+                tracee.send_signal(signal.SIGINT)
+                try:
+                    tracee.wait(timeout=60)
+                except subprocess.TimeoutExpired:
+                    tracee.kill()
+                    tracee.wait()
+        finally:
+            UFFD_SYSCTL.write_text(uffd)
+            if completed:  # nothing to score otherwise
+                (run_dir / "capture.json").write_text(
+                    json.dumps({"tracee_log": str(log), "batches": completed}))
+            for p in run_dir.iterdir():
+                _hand_back(p, Path(args.repo), user)
+            _hand_back(run_dir, Path(args.repo), user)  # also when no file was written
+            _hand_back(log, Path(user.pw_dir), user)
+    print(f"captured {completed} batches into {log}; score with:\n"
           f"  .venv/bin/python detection/g5_capture.py score {run_dir}")
     return 0
 
@@ -262,7 +274,7 @@ def scored_run_ids(csv_path: Path) -> set[str]:
     if not csv_path.exists():
         return set()
     with csv_path.open(newline="", encoding="utf-8") as f:
-        return {r["run_id"] for r in csv.DictReader(f)}
+        return {r.get("run_id") for r in csv.DictReader(f)}
 
 
 def score(args: argparse.Namespace) -> int:
