@@ -51,6 +51,7 @@ Flags:
 - `--duration <sec>`: total scan window in seconds (default `30.0`).
 - `--rule <path>`: YARA rule file (falls back to plain `RTS_SECRET_MARKER_v1` byte search if `yara-python` is not installed).
 - `--entropy-threshold <float>`: 4 KB page Shannon-entropy threshold in bits/byte (default `7.2`, range `(0.0, 8.0]`).
+- `--no-entropy`: skip the per-page Shannon-entropy pass and short-circuit on the first marker match (fast path recommended for timing-sensitive runs such as `coupled_live.py` and G1/G2 sweeps).
 - `--no-entropy-catch`: log `max_entropy` and `entropy_flagged` without counting high-entropy pages as `found=1`.
 - `--variant <str>` / `--dwell-ms <float>` / `--run-id <str>`: sweep metadata written into the CSV rows.
 - `--out-dir <path>` (default `$RTS_RESULTS_DIR` or `<repo>/results`), `--scans-csv <path>`, `--summary-csv <path>`, `--no-csv`.

@@ -216,6 +216,7 @@ def _scan_stream(
     *,
     entropy_threshold: float = DEFAULT_ENTROPY_THRESHOLD,
     catch_on_entropy: bool = True,
+    compute_entropy: bool = True,
 ) -> ScanResult:
     """Scan `regions` from an open memory stream for marker matches and entropy."""
     marker_found = False
@@ -231,14 +232,17 @@ def _scan_stream(
         # Compute byte/page counts and page-aligned entropy strictly on raw_chunk
         # so overlap bytes never shift page boundaries or double-count bytes.
         bytes_scanned += len(raw_chunk)
-        for off in range(0, len(raw_chunk), PAGE_SIZE):
-            page = raw_chunk[off : off + PAGE_SIZE]
-            pages_scanned += 1
-            ent = shannon_entropy(page)
-            if ent > max_entropy:
-                max_entropy = ent
-            if ent >= entropy_threshold:
-                high_entropy_pages += 1
+        if compute_entropy:
+            for off in range(0, len(raw_chunk), PAGE_SIZE):
+                page = raw_chunk[off : off + PAGE_SIZE]
+                pages_scanned += 1
+                ent = shannon_entropy(page)
+                if ent > max_entropy:
+                    max_entropy = ent
+                if ent >= entropy_threshold:
+                    high_entropy_pages += 1
+        else:
+            pages_scanned += (len(raw_chunk) + PAGE_SIZE - 1) // PAGE_SIZE
 
         if not marker_found:
             search_buf = prev_tail + raw_chunk if prev_tail else raw_chunk
@@ -251,6 +255,8 @@ def _scan_stream(
         return _next_tail(prev_tail, raw_chunk, overlap_len)
 
     for reg in regions:
+        if marker_found and not compute_entropy:
+            break
         prev_tail = b""
         pos = reg.start
         while pos < reg.end:
@@ -275,17 +281,23 @@ def _scan_stream(
                         continue
                     if page_bytes:
                         prev_tail = _process_raw_chunk(page_bytes, prev_tail)
+                        if marker_found and not compute_entropy:
+                            break
                     else:
                         prev_tail = b""
+                if marker_found and not compute_entropy:
+                    break
                 pos = chunk_end
                 continue
 
             if not raw_chunk:
                 break
             prev_tail = _process_raw_chunk(raw_chunk, prev_tail)
+            if marker_found and not compute_entropy:
+                break
             pos += len(raw_chunk)
 
-    entropy_flagged = high_entropy_pages > 0
+    entropy_flagged = compute_entropy and high_entropy_pages > 0
     found = marker_found or (entropy_flagged and catch_on_entropy)
     return ScanResult(
         found=found,
@@ -304,6 +316,7 @@ def _scan_once(
     *,
     entropy_threshold: float = DEFAULT_ENTROPY_THRESHOLD,
     catch_on_entropy: bool = True,
+    compute_entropy: bool = True,
 ) -> ScanResult:
     regions = _readable_regions(pid)
     with open(f"/proc/{pid}/mem", "rb", 0) as mem:
@@ -313,6 +326,7 @@ def _scan_once(
             rule,
             entropy_threshold=entropy_threshold,
             catch_on_entropy=catch_on_entropy,
+            compute_entropy=compute_entropy,
         )
 
 
@@ -427,6 +441,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Shannon entropy threshold in bits/byte for flagging 4 KB pages",
     )
     ap.add_argument(
+        "--no-entropy",
+        action="store_true",
+        help="skip the per-page Shannon-entropy pass (fast path for timing runs)",
+    )
+    ap.add_argument(
         "--no-entropy-catch",
         action="store_true",
         help="log entropy metrics without counting high-entropy pages as found=1",
@@ -473,7 +492,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     run_id = args.run_id or _make_run_id(args.pid)
     dwell_str = "" if args.dwell_ms is None else f"{args.dwell_ms:.4g}"
-    catch_on_entropy = not args.no_entropy_catch
+    compute_entropy = not args.no_entropy
+    catch_on_entropy = compute_entropy and not args.no_entropy_catch
 
     stop = False
 
@@ -505,6 +525,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     rule,
                     entropy_threshold=args.entropy_threshold,
                     catch_on_entropy=catch_on_entropy,
+                    compute_entropy=compute_entropy,
                 )
             except (FileNotFoundError, ProcessLookupError):
                 print("[scanner] target process gone", flush=True)
