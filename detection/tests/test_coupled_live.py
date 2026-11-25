@@ -122,6 +122,7 @@ def cell(tmp_path, monkeypatch):
     return run
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="needs Linux: /proc, affinity, prctl")
 def test_window_skips_the_first_scan_and_lines_after_it_ends(cell):
     # First scan misses, scans in the window catch, scans after the window miss.
     row = cell(
@@ -136,12 +137,14 @@ def test_window_skips_the_first_scan_and_lines_after_it_ends(cell):
     assert all(_gone(p) for p in cell.joined)
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="needs Linux: /proc, affinity, prctl")
 def test_scanner_that_crashes_before_scanning_raises_with_its_output(cell):
     with pytest.raises(RuntimeError, match="PermissionError: denied"):
         cell("import sys\nprint('PermissionError: denied', flush=True)\nsys.exit(1)\n")
     assert all(_gone(p) for p in cell.joined)
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="needs Linux: /proc, affinity, prctl")
 def test_scanner_that_stops_mid_window_raises(cell):
     # A scanner that quits early would otherwise read as a starved one.
     with pytest.raises(RuntimeError, match="target process gone"):
@@ -153,6 +156,7 @@ def test_scanner_that_stops_mid_window_raises(cell):
     assert all(_gone(p) for p in cell.joined), "attacker or hogs outlived a failed cell"
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="needs Linux: /proc, affinity, prctl")
 def test_children_die_with_the_harness(tmp_path):
     # SIGKILL skips every finally; PDEATHSIG still takes the children down.
     parent = subprocess.Popen(
@@ -175,3 +179,11 @@ def test_out_file_with_other_columns_is_refused_before_any_cell(tmp_path):
     with pytest.raises(SystemExit, match="different columns"):
         coupled_live.check_out(out)
     coupled_live.check_out(tmp_path / "new.csv")  # a new file is fine
+
+
+def test_module_imports_without_posix_only_modules():
+    # Windows has no pwd; make test must still collect this file there (scripts/setup.ps1).
+    r = subprocess.run([sys.executable, "-c",
+                        "import sys; sys.modules['pwd'] = None\nimport detection.coupled_live"],
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr

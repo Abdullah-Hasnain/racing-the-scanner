@@ -19,7 +19,6 @@ import argparse
 import csv
 import ctypes
 import os
-import pwd
 import re
 import signal
 import subprocess
@@ -103,8 +102,12 @@ def _child_setup(cpu: int, nice: int = 0, fifo: bool = False):
     """Pin a child to one core and give it a nice value or SCHED_FIFO. The child
     is also killed if the harness dies, even by SIGKILL, so no nice -20 hog or
     V2 is left spinning on the measured core."""
+    harness = os.getpid()
+
     def setup() -> None:
         ctypes.CDLL(None, use_errno=True).prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
+        if os.getppid() != harness:  # the harness died before prctl took effect
+            os._exit(1)
         os.sched_setaffinity(0, {cpu})
         if nice:
             os.setpriority(os.PRIO_PROCESS, 0, nice)
@@ -266,6 +269,8 @@ def _write(row: dict, path: Path) -> None:
         w.writerow(row)
     uid = int(os.environ.get("PKEXEC_UID", os.environ.get("SUDO_UID", "-1")))
     if uid >= 0:  # hand the results back to the user who ran pkexec
+        import pwd  # POSIX only; imported here so the module still loads on Windows
+
         gid = pwd.getpwuid(uid).pw_gid
         os.chown(path, uid, gid)
         os.chown(path.parent, uid, gid)
