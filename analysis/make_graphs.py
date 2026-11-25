@@ -162,7 +162,7 @@ def g3_attack_conditions() -> bool:
         ax.set_title(cond)
         ax.set_xticks(range(len(policies)), [G3_LABELS.get(p, p) for p in policies], rotation=40, ha="right")
     axes[0].set_ylabel("scanner slowdown vs no attack (x)")
-    handles = _group_legend(groups[p] for p in policies if p in groups) + [
+    handles = _group_legend(groups.get(p, "reservation") for p in policies) + [
         Patch(facecolor="#ccc", edgecolor="white", label="simulation: p95 latency ratio (mimicry attacker)"),
         Patch(facecolor="#ccc", edgecolor="white", hatch="//",
               label="real kernel: scan period ratio (nice -20 attacker, one core)"),
@@ -201,7 +201,7 @@ def g1_catch_rate() -> bool:
         rows = s[s["variant"] == v]
         for dwell, d in rows.groupby("dwell_ms"):
             ax.errorbar(d["interval_s"], d["catch_rate"],
-                        yerr=[d["catch_rate"] - d["q25"], d["q75"] - d["catch_rate"]],
+                        yerr=[(d["catch_rate"] - d["q25"]).clip(lower=0), (d["q75"] - d["catch_rate"]).clip(lower=0)],
                         marker="o", capsize=2, label=f"dwell {dwell:g} ms")
         for ref, style in (("v1", "--"), ("v4", ":")):
             r = s[s["variant"] == ref].groupby("interval_s")["catch_rate"].median()
@@ -374,15 +374,16 @@ def g6_overhead() -> bool:
         legend_handles = _group_legend(sched["group"])
     if triage is not None:
         ax = axes.pop(0)
-        ax.bar(triage.index.astype(str), triage.values, color="C2")
+        ax.bar(triage.index.astype(str).str.removeprefix("llm:"), triage.values, color="C2")
         ax.set_ylabel("triage latency per process (ms, mean)")
         ax.set_title("G6b: AI triage overhead")
     if sched is not None:
-        fig.legend(handles=legend_handles, loc="lower center", ncol=5, fontsize=8, frameon=False)
+        fig.legend(handles=legend_handles, loc="lower center", bbox_to_anchor=(0.5, 0.04),
+                   ncol=5, fontsize=8, frameon=False)
         fig.text(0.01, 0.01, "sim times only policy.multipliers, not policy.allocate: "
                  "reservation policies and the invariant show ~0 by construction",
                  fontsize=7, color="#555")
-    fig.tight_layout(rect=(0, 0.05, 1, 1))
+    fig.tight_layout(rect=(0, 0.09, 1, 1))
     out = _save(fig, "G6_overhead.png")
     print(f"[G6] wrote {out}")
     return True
