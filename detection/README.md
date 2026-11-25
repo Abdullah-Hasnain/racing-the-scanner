@@ -36,14 +36,31 @@ transition. The `security_file_mprotect` LSM event has both `prot` and
 
 | feature | flip | typical of |
 |---|---|---|
-| `none_rw_flips` | to or from PROT_NONE, whatever the other side | V2-style hiding (unlock, re-lock) |
+| `none_rw_flips` | to or from PROT_NONE, whatever the other side | V2 hiding, but also runtime heap commits and guard pages |
+| `relock_trips` | a region (same `addr`, `len`) unlocked from PROT_NONE, then locked again | V2-style hiding (unlock, re-lock) |
 | `rw_rx_flips` | write access swapped for exec, or back (RW to RX, RX to RW), neither side PROT_NONE | a JIT (V8, the benign stub) |
 
 `none_rw_flips` counts any access on the other side (R, RW, RX, RWX), so a hider
 cannot dodge it by unlocking with exec or read-only access. The cost is overlap
 with benign apps: guard pages (Go, Java) and polling pages (older JVM safepoints)
-also flip to and from PROT_NONE. Measuring that overlap is G5's job, and the
-triage weighs the counts instead of treating one flip as a verdict.
+also flip to and from PROT_NONE. On the first G5 capture node made 158 and the
+JVM 1,413 such flips.
+
+What separates hiding is the round trip: V2 unlocks a page and later locks the
+same page again. `relock_trips` counts regions (same `addr` and `len`) unlocked
+from PROT_NONE and then locked again. On that capture V2 made 200, node and the
+JVM 0. The `custom` detector and the heuristic use `relock_trips`, not raw flips.
+Limits of `relock_trips`:
+- A hider that relocks with a different `addr` or `len` than it unlocked with
+  (say, the whole buffer at once) is not counted, though raw flips would catch
+  it. Exact matching is deliberate: V8 unlocks pieces of a region and later
+  locks the whole region, and overlap matching would count that.
+- Tracee's stream is not strictly time-ordered across CPUs. A lock then unlock
+  of one region that arrives reversed reads as a trip; so can an address reused
+  after `munmap`, since the unlocked set is never cleared. Neither showed up on
+  the 30 held-out benign processes.
+- The benign runtimes measured are Node 22, JDK 25 and Go 1.26. Older JVMs flip
+  a safepoint polling page to PROT_NONE and back, a benign round trip.
 
 Counts are per memory region (VMA), not per call: the kernel runs the LSM hook
 once for each VMA an mprotect call spans. V2 touches one page per call, so it is
@@ -63,7 +80,7 @@ Checked on a real capture (Tracee v0.24.1, kernel 7.0, 10 s, policy as shipped):
 
 | process | Tracee events | aggregator |
 |---|---|---|
-| `v2 --dwell-ms 10 --interval-ms 50` | 200 unlocks `''` to `PROT_READ\|PROT_WRITE`, 201 locks back to `PROT_NONE` | `none_rw_flips` 401, `rw_rx_flips` 0 |
+| `v2 --dwell-ms 10 --interval-ms 50` | 200 unlocks `''` to `PROT_READ\|PROT_WRITE`, 201 locks back to `PROT_NONE` | `none_rw_flips` 401, `relock_trips` 200, `rw_rx_flips` 0 |
 | `run_benign.py --stub` | 9343 RW to RX and 9343 RX to RW, `prev_prot` carrying `PROT_SEM` (VM_SHARED) | `none_rw_flips` 0, `rw_rx_flips` 18686 |
 
 V2 made 200 faults and 200 re-locks, plus the initial whole-buffer lock: 401.
@@ -142,6 +159,29 @@ python3 detection/benign/run_benign.py --stub
 Compiled workloads are built first, so no compiler runs in the measured
 process. Tracee's `processName` for each is `node`, `gcstress`, `java` (plus JVM
 thread names such as `G1 Conc#0`), `malloc_churn`, and `python3` for `sqlite`.
+
+## G5 harness
+
+`python -m detection.harness` scores three detectors on the same labelled
+processes of one Tracee capture and appends one row per detector to
+`$RTS_RESULTS_DIR/detection_g5.csv`:
+
+| detector | fires when |
+| --- | --- |
+| `default_sigs` | Tracee's own signatures fired: `tracee_alerts` > 0 |
+| `custom` | custom-policy rule: `relock_trips` >= 1, `n_userfaultfd` >= 1 or `n_memfd_secret` >= 1 |
+| `ai` | triage verdict is "suspicious" (LLM, or the heuristic with `--no-llm`) |
+
+Only the `ai` row fills `triage_backend` and `triage_ms_mean` (mean wall-clock
+ms per triage call over the labelled records, for G6). If any record fell back
+to the heuristic the backend reads `llm-fallback:<model>` rather than
+`llm:<model>`. Detectors live in the `DETECTORS` table in `harness.py`.
+
+Score each capture once. `default_sigs` and `custom` don't depend on the
+triage backend, so scoring the same capture twice (say `--no-llm`, then with
+the LLM) appends duplicate rows for them, and G5 pools rows by summing. The
+harness refuses to append to a `detection_g5.csv` with an older column layout;
+move that file aside first.
 
 ## First issues
 
