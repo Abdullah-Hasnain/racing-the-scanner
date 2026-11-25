@@ -240,7 +240,8 @@ def run_cell(args: argparse.Namespace, policy: str, condition: str) -> dict:
         if target is not None:
             target_out = _stop_target(target)
         _remove_cgroups()
-    faults = _V2_FAULTS.search(target_out)
+    # Only V2's count is a hiding fault count; V1 prints "faults=0" too (#52).
+    faults = _V2_FAULTS.search(target_out) if cond.attacker == "v2" else None
     return {
         "policy": policy, "condition": condition, "attacker": cond.attacker, "cpu": args.cpu,
         "hogs": len(helpers) - 1, "attacker_nice": args.attacker_nice,
