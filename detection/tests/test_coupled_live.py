@@ -42,7 +42,7 @@ def test_scanner_skips_entropy_and_csv():
     from detection.coupled_live import scanner_command
 
     cmd = scanner_command("/repo", pid=42, interval=0.037, duration=25)
-    assert cmd[1] == "/repo/memory/scanner/scanner.py"
+    assert Path(cmd[1]) == Path("/repo/memory/scanner/scanner.py")  # "\\" on Windows
     assert {"--no-entropy", "--no-csv"} <= set(cmd)
     assert cmd[cmd.index("--pid") + 1] == "42"
 
@@ -79,8 +79,13 @@ while True: time.sleep(0.05)
 
 
 def _script(tmp_path: Path, name: str, body: str) -> Path:
+    """An executable stand-in. The Python body goes in its own file and a
+    #!/bin/sh wrapper execs it, since a #! line holding sys.executable breaks
+    when the interpreter path has a space (a checkout under "Fall 2026")."""
+    py = tmp_path / f"{name}.py"
+    py.write_text(body)
     p = tmp_path / name
-    p.write_text(f"#!{sys.executable}\n" + body)
+    p.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{py}" "$@"\n')
     p.chmod(0o755)
     return p
 
@@ -92,8 +97,9 @@ def _gone(pid: int, timeout: float = 3.0) -> bool:
             os.kill(pid, 0)
         except ProcessLookupError:
             return True
-        # a zombie still answers kill(0); count it as gone once reaped elsewhere
-        if Path(f"/proc/{pid}/stat").read_text().split()[2] == "Z":
+        # a zombie still answers kill(0); count it as gone (Linux only; run_cell reaps)
+        stat = Path(f"/proc/{pid}/stat")
+        if stat.exists() and stat.read_text().split()[2] == "Z":
             return True
         time.sleep(0.05)
     return False
@@ -107,13 +113,16 @@ def cell(tmp_path, monkeypatch):
     monkeypatch.setattr(coupled_live, "_make_cgroups", lambda: (Path("m"), Path("a")))
     monkeypatch.setattr(coupled_live, "_join", lambda cg, pid: joined.append(pid))
     monkeypatch.setattr(coupled_live, "_remove_cgroups", lambda: None)
-    monkeypatch.setattr(coupled_live.time, "sleep", lambda s: None)  # skip V2's lock wait
+    monkeypatch.setattr(coupled_live, "LOCK_WAIT_S", 0)  # skip V2's lock wait
 
-    def run(scanner_body: str, condition: str = "coupled", seconds: float = 0.6) -> dict:
-        scanner = _script(tmp_path, "scanner.py", scanner_body)
-        monkeypatch.setattr(coupled_live, "scanner_command", lambda *a: [str(scanner)])
+    def run(scanner_body: str, condition: str = "coupled", seconds: float = 0.6,
+            v2_body: str = FAKE_V2) -> dict:
+        scanner = tmp_path / "scanner.py"
+        scanner.write_text(scanner_body)
+        monkeypatch.setattr(coupled_live, "scanner_command",
+                            lambda *a: [sys.executable, str(scanner)])
         args = argparse.Namespace(
-            v1_bin=str(_script(tmp_path, "v1", FAKE_V2)), v2_bin=str(_script(tmp_path, "v2", FAKE_V2)),
+            v1_bin=str(_script(tmp_path, "v1", FAKE_V2)), v2_bin=str(_script(tmp_path, "v2", v2_body)),
             cpu=0, hogs=1, attacker_nice=-20, seconds=seconds, interval=0.01, repo=".",
         )
         return coupled_live.run_cell(args, "eevdf", condition)
@@ -122,7 +131,7 @@ def cell(tmp_path, monkeypatch):
     return run
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="needs Linux: /proc, affinity, prctl")
+@pytest.mark.skipif(sys.platform == "win32", reason="stand-ins need /bin/sh and SIGINT")
 def test_window_skips_the_first_scan_and_lines_after_it_ends(cell):
     # First scan misses, scans in the window catch, scans after the window miss.
     row = cell(
@@ -137,14 +146,14 @@ def test_window_skips_the_first_scan_and_lines_after_it_ends(cell):
     assert all(_gone(p) for p in cell.joined)
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="needs Linux: /proc, affinity, prctl")
+@pytest.mark.skipif(sys.platform == "win32", reason="stand-ins need /bin/sh and SIGINT")
 def test_scanner_that_crashes_before_scanning_raises_with_its_output(cell):
     with pytest.raises(RuntimeError, match="PermissionError: denied"):
         cell("import sys\nprint('PermissionError: denied', flush=True)\nsys.exit(1)\n")
     assert all(_gone(p) for p in cell.joined)
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="needs Linux: /proc, affinity, prctl")
+@pytest.mark.skipif(sys.platform == "win32", reason="stand-ins need /bin/sh and SIGINT")
 def test_scanner_that_stops_mid_window_raises(cell):
     # A scanner that quits early would otherwise read as a starved one.
     with pytest.raises(RuntimeError, match="target process gone"):
@@ -187,3 +196,11 @@ def test_module_imports_without_posix_only_modules():
                         "import sys; sys.modules['pwd'] = None\nimport detection.coupled_live"],
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="stand-ins need /bin/sh and SIGINT")
+def test_attacker_that_exits_early_raises_with_its_own_output(cell):
+    scanning = "import time\nfor i in range(100): print(f'scan {i} found=0 scan_ms= 0.30', flush=True); time.sleep(0.01)\n"
+    with pytest.raises(coupled_live.CellFailed, match="integrity mismatch"):
+        cell(scanning, v2_body="print('[v2] integrity mismatch at page 3', flush=True)\n")
+    assert all(_gone(p) for p in cell.joined)

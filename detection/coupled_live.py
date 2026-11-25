@@ -59,6 +59,7 @@ ATTACKER_ARGS = {"v1": [], "v2": ["--duration", "0"]}  # both run until signalle
 CGROUP = Path("/sys/fs/cgroup/rts-coupled")
 MONITOR_WEIGHT, ATTACKER_WEIGHT = 10000, 100
 FIFO_PRIORITY = 10
+LOCK_WAIT_S = 1.0  # let V2 lock its buffer before the first scan
 HOG = "while True: pass"
 
 PR_SET_PDEATHSIG = 1
@@ -176,7 +177,6 @@ def run_cell(args: argparse.Namespace, policy: str, condition: str) -> dict:
     ends, so a failure can't read as starvation. Every child is stopped on the
     way out, whatever happens."""
     pol, cond = POLICIES[policy], CONDITIONS[condition]
-    monitor, attacker = _make_cgroups()
     target: subprocess.Popen | None = None
     helpers: list[subprocess.Popen] = []  # scanner and hogs
     other: deque[str] = deque(maxlen=20)  # the scanner's non-scan lines, for errors
@@ -187,6 +187,7 @@ def run_cell(args: argparse.Namespace, policy: str, condition: str) -> dict:
         return CellFailed(f"{policy}/{condition}: {why}; scanner said:\n{tail}")
 
     try:
+        monitor, attacker = _make_cgroups()
         # The hiding process is the attacker too, so it gets the attacker's priority.
         target = subprocess.Popen(
             [getattr(args, f"{cond.attacker}_bin"), *ATTACKER_ARGS[cond.attacker]],
@@ -194,7 +195,7 @@ def run_cell(args: argparse.Namespace, policy: str, condition: str) -> dict:
             preexec_fn=_child_setup(args.cpu, nice=args.attacker_nice),
         )
         _join(attacker, target.pid)
-        time.sleep(1)  # let V2 lock its buffer before the first scan
+        time.sleep(LOCK_WAIT_S)
         scanner = subprocess.Popen(
             scanner_command(args.repo, target.pid, args.interval, args.seconds + 5),
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
@@ -229,7 +230,9 @@ def run_cell(args: argparse.Namespace, policy: str, condition: str) -> dict:
         if time.monotonic() <= t_end:
             raise failed("the scanner stopped before the window ended")
         if target.poll() is not None:
-            raise failed(f"the attacker exited early (code {target.returncode})")
+            said = (target.stdout.read() if target.stdout else "").strip() or "(no output)"
+            raise CellFailed(f"{policy}/{condition}: the attacker exited early "
+                             f"(code {target.returncode}); it said:\n{said}")
     finally:
         for p in reversed(helpers):
             p.kill()
