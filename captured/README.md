@@ -10,7 +10,7 @@ Only scored CSVs go here, never raw Tracee logs (those are GBs).
 
 | file | figure | how it was made |
 |---|---|---|
-| `coupled_live.csv` | G3 (real-kernel bars) | `detection/coupled_live.py` (#34) as root on Ibad's desktop, i7-14700F bare metal, kernel 7.0.0-44, everything pinned to CPU 2 (a P-core), attacker at nice -20, 4 hogs, scanner interval 37 ms, 3 reps x 20 s per cell, run `20261124-231045` |
+| `coupled_live.csv` | G3 (real-kernel bars) | `detection/coupled_live.py` (#34) as root on Ibad's desktop, i7-14700F bare metal, kernel 7.0.0-44, everything pinned to CPU 2 (a P-core), attacker at nice -20, 4 hogs, scanner interval 37 ms, 3 reps x 20 s per cell, at commit 0fde0f5 (scanner with `--no-entropy`, harness off the measured core), run `20261125-151359`. It replaces run `20261124-231045`, which lost fewer EEVDF scans; see the note under the table in `detection/README.md` |
 | `detection_g5.csv` | G5, G6b | the 5-batch held-out capture from #32: Tracee v0.23.2 on the same desktop, each batch V2 (timing varied), V3 and V4 against node, Go GC, Java GC, malloc churn, sqlite and a JIT stand-in, scored once with llama3.1:8b |
 
 To refresh a file: run its producer, check the numbers, and copy the new CSV here
