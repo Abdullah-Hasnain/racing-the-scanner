@@ -147,12 +147,19 @@ running when an attack begins, and only the scans in the next 20 s count.
 Policies for the scanner: `eevdf` (stock, no reservation), `cgroup_weight`
 (alone in a cgroup with cpu.weight 10000 vs the attacker's 100) and
 `sched_fifo` (SCHED_FIFO 10). The ML policies exist only in the simulation.
-It needs root; `analysis/make_graphs.py` draws `G3_real_kernel.png` from the CSV:
+It needs root. The real-kernel half of G3 is drawn from the CSV by #33:
 
 ```bash
 make -C memory
 pkexec "$PWD/.venv/bin/python" "$PWD/detection/coupled_live.py" --repo "$PWD"
+# the equal-nice control row (3 reps):
+pkexec "$PWD/.venv/bin/python" "$PWD/detection/coupled_live.py" --repo "$PWD" \
+  --attacker-nice 0 --conditions coupled --policies eevdf --out results/coupled_live_equal_nice.csv
 ```
+
+A cell fails loudly, rather than recording a starved-looking row, if the scanner
+never scans or stops early, or the attacker exits early. Rows are written as
+each cell finishes, and every child dies with the harness.
 
 Kernel 7.0.0-44, Intel Core i7-14700F (bare metal), pinned to CPU 2 (a P-core),
 3 reps of 20 s per cell. The scanner sleeps 37 ms between scans, which does not
@@ -175,9 +182,10 @@ divide V2's 100 ms period, so scans sample its whole cycle.
 - Hiding alone costs the scanner no scans; it only means about 10% of scans
   land in V2's exposure window.
 - Under the coupled attack, catches fall less than scans because the scans that
-  do run catch V2 more often (14 to 17% of scans against 10%). That is observed,
-  not explained; sharing a core with V2 may bunch the scanner's turns around
-  V2's wakeups.
+  do run catch V2 more often (about 14 to 18% of scans, 30/220 to 38/216, against
+  10%). That is observed, not explained; sharing a core with V2 may bunch the
+  scanner's turns around V2's wakeups. If so, the starved scanner's catches are
+  inflated, and the catch loss under the coupled attack is a lower bound.
 - Scan time itself does not grow (p95 at most 0.6 ms in any cell); the
   starvation is the scanner waiting longer for its turn between scans.
 - At equal nice the hogs do not starve the scanner (last row,

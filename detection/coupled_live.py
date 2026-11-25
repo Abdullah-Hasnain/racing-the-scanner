@@ -17,12 +17,15 @@ from __future__ import annotations
 
 import argparse
 import csv
+import ctypes
 import os
+import pwd
 import re
 import signal
 import subprocess
 import sys
 import time
+from collections import deque
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -59,6 +62,13 @@ MONITOR_WEIGHT, ATTACKER_WEIGHT = 10000, 100
 FIFO_PRIORITY = 10
 HOG = "while True: pass"
 
+PR_SET_PDEATHSIG = 1
+FIELDS = [
+    "run_id", "rep", "policy", "condition", "attacker", "cpu", "hogs", "attacker_nice",
+    "seconds", "interval_s", "scans", "catches", "scans_per_s", "p50_scan_ms",
+    "p95_scan_ms", "v2_faults",
+]
+
 _SCAN = re.compile(r"^scan\s+\d+\s+found=(\d)\s+scan_ms=\s*([\d.]+)")
 _V2_FAULTS = re.compile(r"faults=(\d+)")
 
@@ -90,8 +100,11 @@ def summarize(lines: Iterable[str], seconds: float) -> ScanSummary:
 
 
 def _child_setup(cpu: int, nice: int = 0, fifo: bool = False):
-    """Pin a child to one core and give it a nice value or SCHED_FIFO."""
+    """Pin a child to one core and give it a nice value or SCHED_FIFO. The child
+    is also killed if the harness dies, even by SIGKILL, so no nice -20 hog or
+    V2 is left spinning on the measured core."""
     def setup() -> None:
+        ctypes.CDLL(None, use_errno=True).prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
         os.sched_setaffinity(0, {cpu})
         if nice:
             os.setpriority(os.PRIO_PROCESS, 0, nice)
@@ -111,9 +124,14 @@ def _make_cgroups() -> tuple[Path, Path]:
 
 
 def _remove_cgroups() -> None:
+    """Best effort: a cgroup that is still populated stays, with a warning,
+    rather than replacing whatever error is already on its way out."""
     for d in (CGROUP / "monitor", CGROUP / "attacker", CGROUP):
-        if d.exists():
-            d.rmdir()
+        try:
+            if d.exists():
+                d.rmdir()
+        except OSError as exc:
+            print(f"warning: could not remove {d}: {exc}", file=sys.stderr)
 
 
 def _join(cgroup: Path, pid: int) -> None:
@@ -121,29 +139,57 @@ def _join(cgroup: Path, pid: int) -> None:
 
 
 def scanner_command(repo: str, pid: int, interval: float, duration: float) -> list[str]:
-    """The live scanner, timed the way #34's captured run was: no entropy pass
-    (it makes each scan ~40x slower, #47) and no CSV (as root it would leave
-    root-owned files in results/; the scan lines on stdout are what we read)."""
+    """The live scanner without its entropy pass (it makes each scan ~40x slower,
+    #47), which is closest to the pre-#45 scanner the README table first used,
+    and without its CSV (as root it would leave root-owned files in results/;
+    the scan lines on stdout are what we read)."""
     return [sys.executable, str(Path(repo) / "memory/scanner/scanner.py"),
             "--pid", str(pid), "--interval", str(interval), "--duration", str(duration),
             "--no-entropy", "--no-csv"]
 
 
+def _stop_target(target: subprocess.Popen) -> str:
+    """SIGINT, so V2 prints its fault count, then SIGKILL if it hangs. V1 just
+    dies on SIGINT. Returns what the target printed."""
+    if target.poll() is None:
+        target.send_signal(signal.SIGINT)
+    try:
+        out, _ = target.communicate(timeout=3)
+    except subprocess.TimeoutExpired:  # a hung V2
+        target.kill()
+        out, _ = target.communicate()
+    return out or ""
+
+
+class CellFailed(RuntimeError):
+    """The scanner or the attacker stopped early, so the cell measured nothing."""
+
+
 def run_cell(args: argparse.Namespace, policy: str, condition: str) -> dict:
     """One run on one core. The scanner is already scanning when the attack
     starts: the hogs begin after its first scan, and only scans in the next
-    `args.seconds` count, timed as their lines arrive."""
+    `args.seconds` count, timed as their lines arrive. Raises CellFailed if the
+    scanner never scans, or the scanner or attacker stops before the window
+    ends, so a failure can't read as starvation. Every child is stopped on the
+    way out, whatever happens."""
     pol, cond = POLICIES[policy], CONDITIONS[condition]
     monitor, attacker = _make_cgroups()
-    procs: list[subprocess.Popen] = []
+    target: subprocess.Popen | None = None
+    helpers: list[subprocess.Popen] = []  # scanner and hogs
+    other: deque[str] = deque(maxlen=20)  # the scanner's non-scan lines, for errors
+    target_out = ""
+
+    def failed(why: str) -> CellFailed:
+        tail = "".join(other).strip() or "(no other output)"
+        return CellFailed(f"{policy}/{condition}: {why}; scanner said:\n{tail}")
+
     try:
         # The hiding process is the attacker too, so it gets the attacker's priority.
         target = subprocess.Popen(
             [getattr(args, f"{cond.attacker}_bin"), *ATTACKER_ARGS[cond.attacker]],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-            preexec_fn=_child_setup(args.cpu, nice=args.hog_nice),
+            preexec_fn=_child_setup(args.cpu, nice=args.attacker_nice),
         )
-        procs.append(target)
         _join(attacker, target.pid)
         time.sleep(1)  # let V2 lock its buffer before the first scan
         scanner = subprocess.Popen(
@@ -152,62 +198,81 @@ def run_cell(args: argparse.Namespace, policy: str, condition: str) -> dict:
             env={**os.environ, "PYTHONUNBUFFERED": "1"},
             preexec_fn=_child_setup(args.cpu, fifo=pol.fifo),
         )
-        procs.append(scanner)
+        helpers.append(scanner)
         _join(monitor if pol.own_cgroup else attacker, scanner.pid)
         lines = iter(scanner.stdout.readline, "")
         for line in lines:
             if _SCAN.match(line.strip()):
                 break
+            other.append(line)
+        else:
+            raise failed("the scanner exited before its first scan")
         for _ in range(args.hogs if cond.hogs else 0):
             hog = subprocess.Popen(
-                [sys.executable, "-c", HOG], preexec_fn=_child_setup(args.cpu, nice=args.hog_nice)
+                [sys.executable, "-c", HOG],
+                preexec_fn=_child_setup(args.cpu, nice=args.attacker_nice),
             )
-            procs.append(hog)
+            helpers.append(hog)
             _join(attacker, hog.pid)
         t_end = time.monotonic() + args.seconds
         window = []
         for line in lines:
             if time.monotonic() > t_end:
                 break
-            window.append(line)
+            if _SCAN.match(line.strip()):
+                window.append(line)
+            else:
+                other.append(line)
+        if time.monotonic() <= t_end:
+            raise failed("the scanner stopped before the window ended")
+        if target.poll() is not None:
+            raise failed(f"the attacker exited early (code {target.returncode})")
     finally:
-        for p in reversed(procs[1:]):  # scanner and hogs
+        for p in reversed(helpers):
             p.kill()
             p.wait()
-    target.send_signal(signal.SIGINT)  # V2 prints its fault count on SIGINT
-    try:
-        target_out, _ = target.communicate(timeout=3)
-    except subprocess.TimeoutExpired:  # V1 has no handler
-        target.kill()
-        target_out, _ = target.communicate()
-    _remove_cgroups()
-    faults = _V2_FAULTS.search(target_out or "")
+        if target is not None:
+            target_out = _stop_target(target)
+        _remove_cgroups()
+    faults = _V2_FAULTS.search(target_out)
     return {
         "policy": policy, "condition": condition, "attacker": cond.attacker, "cpu": args.cpu,
-        "hogs": len(procs) - 2, "attacker_nice": args.hog_nice,
+        "hogs": len(helpers) - 1, "attacker_nice": args.attacker_nice,
         "seconds": args.seconds, "interval_s": args.interval,
         **asdict(summarize(window, args.seconds)),
         "v2_faults": int(faults.group(1)) if faults else None,  # V2 only
     }
 
 
-def _write(rows: list[dict], path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fields = list(rows[0])
+def check_out(path: Path) -> None:
+    """Refuse an existing CSV with other columns before any cell runs, so a
+    mismatch can't throw away a finished sweep."""
     if path.exists():
         with path.open() as f:
-            if next(csv.reader(f), None) != fields:
+            if next(csv.reader(f), None) != FIELDS:
                 sys.exit(f"{path} has different columns; pass a new --out")
+
+
+def _write(row: dict, path: Path) -> None:
+    """Append one row, as soon as its cell finishes, so an interrupted sweep
+    keeps every cell it completed."""
+    assert list(row) == FIELDS, list(row)
+    path.parent.mkdir(parents=True, exist_ok=True)
     new = not path.exists()
     with path.open("a", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=fields)
+        w = csv.DictWriter(f, fieldnames=FIELDS)
         if new:
             w.writeheader()
-        w.writerows(rows)
+        w.writerow(row)
     uid = int(os.environ.get("PKEXEC_UID", os.environ.get("SUDO_UID", "-1")))
     if uid >= 0:  # hand the results back to the user who ran pkexec
-        os.chown(path, uid, uid)
-        os.chown(path.parent, uid, uid)
+        gid = pwd.getpwuid(uid).pw_gid
+        os.chown(path, uid, gid)
+        os.chown(path.parent, uid, gid)
+
+
+def _exit_on_signal(signum, frame):
+    raise SystemExit(128 + signum)  # unwinds, so run_cell stops every child
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -217,7 +282,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--v2-bin", help="V2 binary (default: <repo>/memory/bin/v2)")
     ap.add_argument("--cpu", type=int, default=2, help="core to pin everything to")
     ap.add_argument("--hogs", type=int, default=4, help="hogs in starvation and coupled")
-    ap.add_argument("--hog-nice", type=int, default=-20, help="the attacker's claimed priority")
+    ap.add_argument("--attacker-nice", "--hog-nice", type=int, default=-20,
+                    help="the attacker's claimed priority (V1/V2 and the hogs); 0 = equal nice")
     ap.add_argument("--seconds", type=float, default=20.0, help="counted scan window per cell")
     # 37 ms does not divide V2's 100 ms period, so scans sweep its whole cycle.
     ap.add_argument("--interval", type=float, default=0.037, help="scanner sleep between scans")
@@ -235,19 +301,20 @@ def main(argv: list[str] | None = None) -> int:
         if not Path(getattr(args, f"{b}_bin")).exists():
             sys.exit(f"no {b.upper()} binary at {getattr(args, f'{b}_bin')}; run `make -C memory` first")
 
-    rows = []
+    out = Path(args.out or Path(args.repo) / "results/coupled_live.csv")
+    check_out(out)
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, _exit_on_signal)
+    others = set(range(os.cpu_count() or 1)) - {args.cpu}
+    if others:  # keep the harness off the measured core, so it timestamps lines on time
+        os.sched_setaffinity(0, others)
     run_id = time.strftime("%Y%m%d-%H%M%S")
-    try:
-        for rep in range(args.reps):
-            for condition in args.conditions:
-                for policy in args.policies:
-                    row = {"run_id": run_id, "rep": rep, **run_cell(args, policy, condition)}
-                    print(row, flush=True)
-                    rows.append(row)
-    finally:
-        _remove_cgroups()
-        if rows:
-            _write(rows, Path(args.out or Path(args.repo) / "results/coupled_live.csv"))
+    for rep in range(args.reps):
+        for condition in args.conditions:
+            for policy in args.policies:
+                row = {"run_id": run_id, "rep": rep, **run_cell(args, policy, condition)}
+                print(row, flush=True)
+                _write(row, out)
     return 0
 
 
