@@ -14,8 +14,8 @@ Two families, one response (demote a suspected hog, boost the monitor):
   hogs and boost the monitor. Mimicry makes the hog classify as normal.
 
 The boost is a weight multiplier, not a reservation: a hog that is not demoted
-still outweighs the boosted monitor. Only the invariant (base.py) guarantees a
-share.
+still outweighs the boosted monitor. Only a reservation guarantees a share: the
+invariant (base.py) or a standard Linux one (reservation.py).
 
 Besides the multiplier, every policy exposes a continuous score per process
 (`scores`): the anomaly score for the unsupervised family, P(hog) for the
