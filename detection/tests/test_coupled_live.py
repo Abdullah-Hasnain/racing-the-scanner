@@ -108,10 +108,16 @@ def _gone(pid: int, timeout: float = 3.0) -> bool:
             os.kill(pid, 0)
         except ProcessLookupError:
             return True
-        # a zombie still answers kill(0); count it as gone (Linux only; run_cell reaps)
-        stat = Path(f"/proc/{pid}/stat")
-        if stat.exists() and stat.read_text().split()[2] == "Z":
+        # A zombie still answers kill(0), so read its state from /proc (Linux only).
+        # The process can exit between kill(0) and the read; that read then raises.
+        try:
+            if Path(f"/proc/{pid}/stat").read_text().split()[2] == "Z":
+                return True
+        except ProcessLookupError:
             return True
+        except FileNotFoundError:
+            if Path("/proc").is_dir():  # exited and was reaped; no /proc at all on macOS
+                return True
         time.sleep(0.05)
     return False
 
