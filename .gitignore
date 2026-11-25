@@ -19,6 +19,7 @@ memory/**/*.bin
 results/
 data/
 *.csv
+!captured/*.csv
 *.parquet
 *.pkl
 *.joblib

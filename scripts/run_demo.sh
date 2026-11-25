@@ -1,8 +1,23 @@
 #!/usr/bin/env bash
-# One-command demo: run the full scheduler-policy sweep and build the figure.
-# This is the reproducible headline result (the simulation half).
+# One-command demo: rebuild every figure G1-G6.
+#
+#   scripts/run_demo.sh          regenerate the CPU-only data (scheduler sweep, G3
+#                                conditions) and draw every figure; the root-only
+#                                data comes from the committed copies in captured/
+#   scripts/run_demo.sh --live   also re-run the root captures on this machine
+#                                (real-kernel G3 run, Tracee G5 capture); asks for
+#                                your password through pkexec
+#
+# A CSV in results/ always wins over its copy in captured/ (see captured/README.md).
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+LIVE=0
+case "${1:-}" in
+  "") ;;
+  --live) LIVE=1 ;;
+  *) echo "usage: scripts/run_demo.sh [--live]" >&2; exit 2 ;;
+esac
 
 # Use the project venv even when it isn't activated (a fresh terminal after
 # scripts/setup.sh has no `python` on Ubuntu, and system python lacks the deps).
@@ -15,10 +30,39 @@ fi
 echo "== full policy sweep (baseline + 15 ML + 4 reservations + invariant) =="
 "$PY" -m sim.run_experiment --policies all --runs 20
 
+echo "== attack conditions for G3 (none, hiding, starvation, coupled; naive and mimicry) =="
+"$PY" -m sim.run_experiment --policies all --runs 20 --g3
+
+if [ "$LIVE" = 1 ]; then
+  echo "== live: building the payloads =="
+  make -C memory
+
+  echo "== live: coupled attack on the real kernel (root, ~15 min) =="
+  pkexec "$PWD/$PY" "$PWD/detection/coupled_live.py" --repo "$PWD"
+
+  echo "== live: G5 Tracee capture (root; needs Tracee v0.23.2, node, go, java, Ollama) =="
+  if [ -f results/detection_g5.csv ]; then
+    old="results/detection_g5.csv.$(date +%Y%m%d-%H%M%S).bak"
+    mv results/detection_g5.csv "$old"
+    echo "moved the previous detection_g5.csv aside to $old"
+  fi
+  pkexec "$PWD/$PY" "$PWD/detection/g5_capture.py" capture --repo "$PWD"
+  run_dir=$(ls -td results/g5/*/ | head -1)
+  "$PY" detection/g5_capture.py score "$run_dir"
+
+  echo "(G1/G2 have no live sweep yet: they draw once memory/ writes g1_scan.csv and g2_pareto.csv, #4/#5.)"
+fi
+
 echo "== figures =="
-"$PY" analysis/make_graphs.py
+"$PY" -m analysis.make_graphs
 
 echo
-echo "Done. See results/aggregate_mimicry.csv and figures/G4_policy_comparison.png"
-echo "Expected: every ML policy is evaded under mimicry, while every CPU reservation"
-echo "(the invariant is one of them) keeps the monitor scheduled."
+echo "Done. Figures are in figures/."
+echo "Expected:"
+echo "  G3: EEVDF and the ML policies slow the scanner several times over under starvation"
+echo "      and the coupled attack; every reservation stays at 1.0x, in the simulation and"
+echo "      on the real kernel."
+echo "  G4: every ML policy is evaded under mimicry (miss rate 1.0), while every CPU"
+echo "      reservation (the invariant is one of them) keeps the monitor scheduled (0.0)."
+echo "  G5: Tracee's default signatures miss the hiding payloads; the custom rule catches"
+echo "      them with no false alarms on the benign runtimes."
