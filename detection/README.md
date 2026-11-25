@@ -145,6 +145,77 @@ cannot name an event set (`event: default` is rejected as "not valid").
   With `scope: global` it writes about 1 MB/s. Stop it with Ctrl-C.
 - The output file is owned by root and world-readable.
 
+## Coupled attack on the real kernel
+
+`coupled_live.py` runs the reservation half of the simulation's claim on real
+Linux (#15), in the simulation's four G3 conditions. The attacker shares one
+core with the live RAM scanner and claims nice -20, as the simulation's attacker
+claims a high priority:
+
+| condition | attacker |
+|---|---|
+| `none` | V1, which never hides its marker |
+| `starvation` | V1 plus 4 CPU hogs |
+| `hiding` | V2, which hides its marker except for 10 ms per 100 ms |
+| `coupled` | V2 plus 4 CPU hogs |
+
+The hogs start after the scanner's first scan, since a monitor is already
+running when an attack begins, and only the scans in the next 20 s count.
+Policies for the scanner: `eevdf` (stock, no reservation), `cgroup_weight`
+(alone in a cgroup with cpu.weight 10000 vs the attacker's 100) and
+`sched_fifo` (SCHED_FIFO 10). The ML policies exist only in the simulation.
+It needs root. The real-kernel half of G3 is drawn from the CSV by #33:
+
+```bash
+make -C memory
+pkexec "$PWD/.venv/bin/python" "$PWD/detection/coupled_live.py" --repo "$PWD"
+# the equal-nice control row (3 reps):
+pkexec "$PWD/.venv/bin/python" "$PWD/detection/coupled_live.py" --repo "$PWD" \
+  --attacker-nice 0 --conditions coupled --policies eevdf --out results/coupled_live_equal_nice.csv
+```
+
+A cell fails loudly, rather than recording a starved-looking row, if the scanner
+never scans or stops early, or the attacker exits early. Rows are written as
+each cell finishes, and every child dies with the harness.
+
+Kernel 7.0.0-44, Intel Core i7-14700F (bare metal), pinned to CPU 2 (a P-core),
+3 reps of 20 s per cell, at commit 0fde0f5 (run `20261125-151359`; equal-nice row
+`20261125-152640`). The scanner sleeps 37 ms between scans, which does not divide
+V2's 100 ms period, so scans sample its whole cycle.
+
+| condition | policy | scans/s | scans that caught the attacker |
+|---|---|---|---|
+| none | all three | 26.75 to 26.8 | 535 to 536 (every scan) |
+| starvation | eevdf | 2.6 to 3.15 | 52 to 63 (every scan) |
+| starvation | cgroup_weight, sched_fifo | 26.85 to 26.9 | 537 to 538 |
+| hiding | all three | 26.75 to 26.85 | 52 to 59 |
+| coupled | eevdf | 4.2 to 4.75 | 15 to 17 |
+| coupled | cgroup_weight, sched_fifo | 26.9 to 26.95 | 50 to 55 |
+| coupled, attacker at nice 0 | eevdf | 26.55 | 56 to 62 |
+
+- The scanner loses CPU only when the attacker hogs, and only under stock
+  EEVDF: about 89% of its scans under starvation, about 83% under the coupled
+  attack (catches down about 70% against hiding alone). Either reservation keeps
+  every condition at the no-attack level, without judging any process.
+- Hiding alone costs the scanner no scans; it only means about 10% of scans
+  land in V2's exposure window.
+- Under the coupled attack, catches fall less than scans because the scans that
+  do run catch V2 more often (16 to 18% of scans, 15/94 to 17/95, against 10%).
+  That is observed, not explained; sharing a core with V2 may bunch the
+  scanner's turns around V2's wakeups. If so, the starved scanner's catches are
+  inflated, and the catch loss under the coupled attack is a lower bound.
+- Scan time itself does not grow (p95 at most 0.42 ms in any cell); the
+  starvation is the scanner waiting longer for its turn between scans.
+- At equal nice the hogs do not starve the scanner (last row,
+  `results/coupled_live_equal_nice.csv`). The attack needs the claimed priority.
+- V2 made 210 to 215 faults in every cell, so the hogs did not slow the hider.
+- An earlier run of the same grid (pre-#45 scanner, harness not pinned) lost less
+  under EEVDF: 6.0 to 6.2 scans/s under starvation and 10.8 to 11.0 under the
+  coupled attack, with every reservation row the same as here. Between the two
+  runs the scanner changed (#45/#49: chunked reads, no file-backed mappings,
+  per-scan percentiles) and the harness moved off the measured core; which one
+  moved the EEVDF rows is not established. The conclusion does not change.
+
 ## Benign suite
 
 `benign/run_benign.py` runs the legitimate workloads (Node.js, Go/Java GC,
