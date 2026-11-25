@@ -221,13 +221,16 @@ def g1_catch_rate() -> bool:
 
 
 def g2_summary(df: pd.DataFrame) -> pd.DataFrame:
-    """Median slowdown, evasion and minor faults/s per variant and dwell, with the Pareto front.
+    """Median slowdown, evasion and faults/s per variant and dwell, with the Pareto front.
+
+    Faults are the payload's own count (`faults_per_s`), not /proc minflt: V2's
+    SIGSEGV faults never reach min_flt, so minflt would show V2 at zero.
 
     A setting is on the front when no other setting is at least as cheap for the
     attacker (slowdown vs V1) and at least as evasive, and strictly better in one.
     """
-    df = df.assign(minflt_per_s=df["minflt"] / df["duration_s"], dwell_ms=df["dwell_ms"].fillna(0))
-    s = df.groupby(["variant", "dwell_ms"])[["slowdown_vs_v1", "evasion_rate", "minflt_per_s"]].median()
+    df = df.assign(dwell_ms=df["dwell_ms"].fillna(0))
+    s = df.groupby(["variant", "dwell_ms"])[["slowdown_vs_v1", "evasion_rate", "faults_per_s"]].median()
     s = s.reset_index()
     slow, ev = s["slowdown_vs_v1"].to_numpy(), s["evasion_rate"].to_numpy()
     s["pareto"] = [
@@ -262,9 +265,9 @@ def g2_pareto() -> bool:
     ax1.set_ylim(-0.03, 1.03)
     ax1.legend(fontsize=8)
     labels = [f"{v.upper()} {d:g}ms" if d else v.upper() for v, d in zip(s["variant"], s["dwell_ms"], strict=True)]
-    ax2.bar(range(len(s)), s["minflt_per_s"], color=[VARIANT_COLORS.get(v, FALLBACK_BLUE) for v in s["variant"]])
+    ax2.bar(range(len(s)), s["faults_per_s"], color=[VARIANT_COLORS.get(v, FALLBACK_BLUE) for v in s["variant"]])
     ax2.set_xticks(range(len(s)), labels, rotation=45, ha="right", fontsize=8)
-    ax2.set_ylabel("minor page faults per second (median)")
+    ax2.set_ylabel("payload faults per second (median)")
     ax2.set_yscale("symlog")
     fig.suptitle("G2: what hiding costs the attacker", fontsize=11)
     fig.tight_layout()

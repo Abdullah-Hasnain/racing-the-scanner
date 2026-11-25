@@ -208,12 +208,13 @@ def _g1_csv(path):
 def _g2_csv(path):
     rows = []
     for rep in range(3):
-        for variant, dwell, slow, evade, minflt in [("v1", 0, 1.0, 0.0, 0), ("v2", 1, 40.0, 0.95, 5000),
+        # V2's SIGSEGV faults never reach /proc minflt, so its minflt stays near 0
+        for variant, dwell, slow, evade, faults in [("v1", 0, 1.0, 0.0, 0), ("v2", 1, 40.0, 0.95, 5000),
                                                     ("v2", 25, 8.0, 0.6, 900), ("v3", 10, 20.0, 0.9, 3000),
                                                     ("v4", 0, 1.1, 1.0, 2)]:
             rows.append(dict(run_id=f"r{rep}", rep=rep, variant=variant, dwell_ms=dwell, pattern="seq",
                              duration_s=5, accesses=1000, accesses_per_s=200, slowdown_vs_v1=slow + rep,
-                             faults=minflt, faults_per_s=minflt / 5, minflt=minflt, evasion_rate=evade,
+                             faults=faults, faults_per_s=faults / 5, minflt=3, evasion_rate=evade,
                              catch_rate=1 - evade, p95_scan_ms=2))
     pd.DataFrame(rows).to_csv(path / "g2_pareto.csv", index=False)
 
@@ -243,7 +244,7 @@ def test_g2_pareto_front_keeps_only_undominated_points(dirs):
     # v4 evades everything at ~1x cost, so it dominates every V2/V3 setting
     assert list(front.index) == [("v1", 0), ("v4", 0)]
     assert s.set_index(["variant", "dwell_ms"]).loc[("v2", 1), "slowdown_vs_v1"] == 41.0  # median over reps
-    assert s.set_index(["variant", "dwell_ms"]).loc[("v2", 1), "minflt_per_s"] == 1000.0
+    assert s.set_index(["variant", "dwell_ms"]).loc[("v2", 1), "faults_per_s"] == 1000.0  # not minflt
 
 
 def test_g2_writes_and_skips_and_reads_captured(dirs, tmp_path):
