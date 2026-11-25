@@ -36,7 +36,10 @@ DWELL_VARIANTS = frozenset({"v2", "v3"})
 PATTERNS = ("seq", "random", "stride")
 
 DEFAULT_VARIANTS = ("v1", "v2", "v3", "v4")
-DEFAULT_INTERVALS = (0.05, 0.15, 0.5, 1.5, 5.0)
+# Each interval is 37 ms past a multiple of 100 ms. V2/V3 expose a page once per
+# 100 ms, and a multiple of 50 ms keeps every scan on the same phase of that cycle
+# (#63); stepping 37 ms per scan visits every phase, as #34's 37 ms interval does.
+DEFAULT_INTERVALS = (0.037, 0.137, 0.537, 1.537, 5.037)
 DEFAULT_DWELLS_MS = (1.0, 5.0, 10.0, 25.0)
 DEFAULT_TOUCH_INTERVAL_MS = 100.0
 DEFAULT_PATTERN = "seq"
@@ -45,7 +48,7 @@ DEFAULT_DURATION_S = 10.0
 DEFAULT_LONG_DURATION_S = 20.0
 MIN_ELAPSED_FRACTION = 0.9
 
-SMOKE_INTERVALS = (0.05, 0.5)
+SMOKE_INTERVALS = (0.037, 0.537)
 SMOKE_DWELLS_MS = (5.0, 25.0)
 SMOKE_REPS = 1
 SMOKE_DURATION_S = 2.0
@@ -460,7 +463,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         nargs="+",
         type=float,
         default=None,
-        help="scan intervals in seconds (default: 0.05 0.15 0.5 1.5 5.0)",
+        help="scan intervals in seconds (default: 0.037 0.137 0.537 1.537 5.037)",
     )
     ap.add_argument(
         "--dwell-ms",
@@ -502,7 +505,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     ap.add_argument(
         "--smoke",
         action="store_true",
-        help="fast verification grid -> g1_scan_smoke.csv (0.05/0.5s, 5/25ms, 1 rep, 2s)",
+        help="fast verification grid -> g1_scan_smoke.csv (0.037/0.537s, 5/25ms, 1 rep, 2s)",
     )
     ap.add_argument(
         "--cpu",

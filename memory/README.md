@@ -74,7 +74,7 @@ The scanner reports catch rate and `p50`/`p95`/`p99` scan latency. V1 should be 
 
 ## G1 Sweep (`sweep_g1.py`)
 
-`memory/sweep_g1.py` sweeps scan intervals (`0.05`, `0.15`, `0.5`, `1.5`, `5.0` s) and dwell times (`1`, `5`, `10`, `25` ms for `v2`/`v3`; `v1`/`v4` have empty `dwell_ms`) across the compiled payloads and writes one row per run/rep to `$RTS_RESULTS_DIR/g1_scan.csv` (default `<repo>/results/g1_scan.csv`, or `g1_scan_smoke.csv` with `--smoke`):
+`memory/sweep_g1.py` sweeps scan intervals (`0.037`, `0.137`, `0.537`, `1.537`, `5.037` s: each 37 ms past a multiple of 100 ms, so scans step through V2/V3's 100 ms cycle instead of locking to one phase of it, #63) and dwell times (`1`, `5`, `10`, `25` ms for `v2`/`v3`; `v1`/`v4` have empty `dwell_ms`) across the compiled payloads and writes one row per run/rep to `$RTS_RESULTS_DIR/g1_scan.csv` (default `<repo>/results/g1_scan.csv`, or `g1_scan_smoke.csv` with `--smoke`):
 
 ```bash
 sudo python3 -m memory.sweep_g1 --smoke   # quick WSL/local verification -> results/g1_scan_smoke.csv
@@ -88,7 +88,7 @@ pkexec sh -c 'cd /path/to/repo && .venv/bin/python -m memory.sweep_g1'
 ```
 
 Key flags:
-- `--intervals <sec ...>`, `--dwell-ms <ms ...>`, `--reps <int>`: override the default grid (`0.05 0.15 0.5 1.5 5.0` s, `1 5 10 25` ms, `3` reps).
+- `--intervals <sec ...>`, `--dwell-ms <ms ...>`, `--reps <int>`: override the default grid (`0.037 0.137 0.537 1.537 5.037` s, `1 5 10 25` ms, `3` reps).
 - `--cpu <int>` / `--no-pin`: pin both payload and scanner to one core (default `2` on Linux via `sched_setaffinity`, matching G3).
 - `--resume`: skip `(variant, dwell_ms, interval_s, pattern, duration_s, rep)` cells already present in the output CSV.
 - `--with-entropy`: enable the per-page Shannon-entropy pass (disabled by default via `--no-entropy`, leaving `max_entropy` blank).

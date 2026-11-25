@@ -235,13 +235,25 @@ def _g2_csv(path):
     pd.DataFrame(rows).to_csv(path / "g2_pareto.csv", index=False)
 
 
-def test_g1_summary_is_median_catch_rate_per_variant_dwell_interval(dirs):
-    res, _ = dirs
-    _g1_csv(res)
-    s = mg.g1_summary(pd.read_csv(res / "g1_scan.csv")).set_index(["variant", "dwell_ms", "interval_s"])
-    assert s.loc[("v2", 10, 0.5), "catch_rate"] == pytest.approx(0.11)  # median of 0.10, 0.11, 0.12
-    assert s.loc[("v2", 10, 0.5), "q25"] == pytest.approx(0.105)
-    assert s.loc[("v1", 0, 5.0), "catch_rate"] == 1.0
+def test_g1_summary_pools_scans_per_cell_with_a_wilson_interval():
+    # A long-interval cell: 3 runs of 4 scans with 1, 0 and 0 catches. The median of
+    # the per-run rates would be 0; pooled it is 1/12, with a wide 95% interval.
+    df = pd.DataFrame([
+        dict(variant="v2", dwell_ms=10, interval_s=5.037, scans=4, catches=c) for c in (1, 0, 0)
+    ] + [dict(variant="v2", dwell_ms=10, interval_s=0.037, scans=269, catches=c) for c in (27, 28, 26)])
+    s = mg.g1_summary(df).set_index(["variant", "dwell_ms", "interval_s"])
+    low_n = s.loc[("v2", 10, 5.037)]
+    assert low_n["scans"] == 12
+    assert low_n["catch_rate"] == pytest.approx(1 / 12)
+    assert (low_n["lo"], low_n["hi"]) == (pytest.approx(0.0149, abs=1e-3), pytest.approx(0.354, abs=1e-3))
+    many = s.loc[("v2", 10, 0.037)]
+    assert many["catch_rate"] == pytest.approx(81 / 807)
+    assert many["hi"] - many["lo"] < 0.05  # 807 scans pin it down
+
+
+def test_wilson_interval_of_no_catches_starts_at_zero():
+    lo, hi = mg.wilson_interval(0, 4)
+    assert lo == 0.0 and hi == pytest.approx(0.490, abs=1e-3)
 
 
 def test_g1_writes_and_skips(dirs):
