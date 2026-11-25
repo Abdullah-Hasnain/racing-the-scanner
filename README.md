@@ -73,11 +73,13 @@ python analysis/make_graphs.py          # writes G1-G6 into figures/
 ```
 
 Or in one command, without activating the venv: `scripts/run_demo.sh` (run
-`scripts/setup.sh` first). It re-runs the simulation and draws every figure; the
+`scripts/setup.sh` first). It re-runs the simulation and draws G3-G6, and G1/G2
+once the memory sweeps (#4, #5) have written their CSVs; the
 data that needs root or a real kernel (the real-kernel G3 run and the Tracee G5
 capture) comes from the committed `captured/` folder. `scripts/run_demo.sh --live`
 also re-runs those captures on this machine (root via `pkexec`, plus Tracee
-v0.23.2, Ollama and the benign runtimes; see `detection/README.md`).
+v0.23.2, Ollama and the benign runtimes; see `detection/README.md`). The default
+run takes about 20-25 minutes, mostly the `--g3` sweep, and prints each step.
 
 Add `--no-mimicry` for the naive-hog control, `--condition none|hiding|starvation`
 for one half of the attack, or `--g3` to sweep every condition in both modes into

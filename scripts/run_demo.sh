@@ -33,19 +33,27 @@ echo "== full policy sweep (baseline + 15 ML + 4 reservations + invariant) =="
 echo "== attack conditions for G3 (none, hiding, starvation, coupled; naive and mimicry) =="
 "$PY" -m sim.run_experiment --policies all --runs 20 --g3
 
+# Both live scripts append to their CSV, and the figures pool every row in it, so an
+# earlier run on this machine is moved aside rather than blended into this one.
+move_aside() {
+  if [ -f "results/$1" ]; then
+    local old
+    old="results/$1.$(date +%Y%m%d-%H%M%S).bak"
+    mv "results/$1" "$old"
+    echo "moved the previous $1 aside to $old"
+  fi
+}
+
 if [ "$LIVE" = 1 ]; then
   echo "== live: building the payloads =="
   make -C memory
 
   echo "== live: coupled attack on the real kernel (root, ~15 min) =="
+  move_aside coupled_live.csv
   pkexec "$PWD/$PY" "$PWD/detection/coupled_live.py" --repo "$PWD"
 
   echo "== live: G5 Tracee capture (root; needs Tracee v0.23.2, node, go, java, Ollama) =="
-  if [ -f results/detection_g5.csv ]; then
-    old="results/detection_g5.csv.$(date +%Y%m%d-%H%M%S).bak"
-    mv results/detection_g5.csv "$old"
-    echo "moved the previous detection_g5.csv aside to $old"
-  fi
+  move_aside detection_g5.csv
   pkexec "$PWD/$PY" "$PWD/detection/g5_capture.py" capture --repo "$PWD"
   run_dir=$(ls -td results/g5/*/ | head -1)
   "$PY" detection/g5_capture.py score "$run_dir"

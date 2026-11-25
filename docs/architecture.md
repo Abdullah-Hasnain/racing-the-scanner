@@ -54,7 +54,8 @@ ROADMAP for the stretch path.
 All ML policies share one harness: same features in, a priority multiplier out.
 That is why 15 of them is a model sweep, not 15 projects. Expected result: under
 mimicry the ML policies are evaded (they cannot tell the disguised hog apart from
-a benign app), while the invariant holds. The reservation group answers "why not
+a benign app), while every CPU reservation, the invariant included, keeps the
+monitor scheduled. The reservation group answers "why not
 just use real-time priority or cgroups?" (see "Standard reservation baselines").
 
 ### The 15 ML policies: calibration and behavior
