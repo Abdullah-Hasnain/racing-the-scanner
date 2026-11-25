@@ -69,13 +69,24 @@ from pathlib import Path  # noqa: E402
 from detection import coupled_live  # noqa: E402
 
 FAKE_V2 = """\
-import signal, sys, time
+import os, signal, sys, time
 def done(*_):
     print("[v2] done: accesses=7 faults=7 relocks=7", flush=True); sys.exit(0)
 signal.signal(signal.SIGINT, done)
+open(os.environ["RTS_STANDIN_READY"], "w").close()  # SIGINT is handled from here on
 print("[v2] pid ready", flush=True)
 while True: time.sleep(0.05)
 """
+
+# The stand-in scanner starts scanning only once the attacker stand-in has said
+# it's ready, as LOCK_WAIT_S does for the real V2. With LOCK_WAIT_S at 0, timing
+# alone flaked on a loaded host: V2 not yet handling SIGINT, or not yet exited.
+WAIT_FOR_ATTACKER = (
+    "import os as _os, time as _time\n"
+    "for _ in range(2000):  # up to 10 s\n"
+    "    if _os.path.exists(_os.environ['RTS_STANDIN_READY']): break\n"
+    "    _time.sleep(0.005)\n"
+)
 
 
 def _script(tmp_path: Path, name: str, body: str) -> Path:
@@ -114,11 +125,12 @@ def cell(tmp_path, monkeypatch):
     monkeypatch.setattr(coupled_live, "_join", lambda cg, pid: joined.append(pid))
     monkeypatch.setattr(coupled_live, "_remove_cgroups", lambda: None)
     monkeypatch.setattr(coupled_live, "LOCK_WAIT_S", 0)  # skip V2's lock wait
+    monkeypatch.setenv("RTS_STANDIN_READY", str(tmp_path / "attacker.ready"))
 
     def run(scanner_body: str, condition: str = "coupled", seconds: float = 0.6,
             v2_body: str = FAKE_V2) -> dict:
         scanner = tmp_path / "scanner.py"
-        scanner.write_text(scanner_body)
+        scanner.write_text(WAIT_FOR_ATTACKER + scanner_body)
         monkeypatch.setattr(coupled_live, "scanner_command",
                             lambda *a: [sys.executable, str(scanner)])
         args = argparse.Namespace(
@@ -200,7 +212,10 @@ def test_module_imports_without_posix_only_modules():
 
 @pytest.mark.skipif(sys.platform == "win32", reason="stand-ins need /bin/sh and SIGINT")
 def test_attacker_that_exits_early_raises_with_its_own_output(cell):
-    scanning = "import time\nfor i in range(100): print(f'scan {i} found=0 scan_ms= 0.30', flush=True); time.sleep(0.01)\n"
+    # Scans for up to 5 s, well past the 0.6 s window, so the harness ends the window.
+    scanning = "import time\nfor i in range(500): print(f'scan {i} found=0 scan_ms= 0.30', flush=True); time.sleep(0.01)\n"
+    exits = ("import os\nprint('[v2] integrity mismatch at page 3', flush=True)\n"
+             "open(os.environ['RTS_STANDIN_READY'], 'w').close()\n")  # then exits
     with pytest.raises(coupled_live.CellFailed, match="integrity mismatch"):
-        cell(scanning, v2_body="print('[v2] integrity mismatch at page 3', flush=True)\n")
+        cell(scanning, v2_body=exits)
     assert all(_gone(p) for p in cell.joined)
