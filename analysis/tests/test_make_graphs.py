@@ -14,6 +14,7 @@ def dirs(tmp_path, monkeypatch):
     res.mkdir()
     monkeypatch.setattr(mg, "RESULTS", res)
     monkeypatch.setattr(mg, "FIGURES", fig)
+    monkeypatch.setattr(mg, "CAPTURED", tmp_path / "captured")
     return res, fig
 
 
@@ -60,19 +61,23 @@ def test_g4_reservation_has_its_own_colour():
         mg.GROUP_COLORS["baseline"], mg.GROUP_COLORS["invariant"])
 
 
-def test_g3_writes_and_skips(dirs):
-    res, fig = dirs
-    assert mg.g3_attack_conditions() is False
+def _g3_csv(res):
     rows = []
     for cond in ["none", "hiding", "starvation", "coupled"]:
         for mim in [False, True]:
-            for pol, grp in [("baseline", "baseline"), ("iforest", "ml-unsupervised"),
-                             ("rf", "ml-supervised"), ("cgroup_weight", "reservation"),
-                             ("invariant", "invariant")]:
+            for pol, grp, slow in [("baseline", "baseline", 7.0), ("iforest", "ml-unsupervised", 5.0),
+                                   ("rf", "ml-supervised", 6.0), ("sched_fifo", "reservation", 1.0),
+                                   ("cgroup_weight", "reservation", 1.0), ("invariant", "invariant", 1.0)]:
+                hurt = mim and cond in ("starvation", "coupled")
                 rows.append(dict(condition=cond, mimicry=mim, policy=pol, group=grp,
-                                 miss_rate=0.5, miss_rate_q25=0.4, miss_rate_q75=0.6,
-                                 p95_latency=10))
+                                 miss_rate=0.5, p95_latency=4.0 * (slow if hurt else 1.0)))
     pd.DataFrame(rows).to_csv(res / "aggregate_g3.csv", index=False)
+
+
+def test_g3_writes_and_skips(dirs):
+    res, fig = dirs
+    assert mg.g3_attack_conditions() is False
+    _g3_csv(res)
     assert mg.g3_attack_conditions() is True
     assert _png(fig / "G3_attack_conditions.png")
 
@@ -145,19 +150,42 @@ def _live_csv(res):
     pd.DataFrame(rows).to_csv(res / "coupled_live.csv", index=False)
 
 
-def test_live_g3_summary_takes_median_and_range_over_reps(dirs):
+def test_g3_slowdown_is_relative_to_no_attack_in_both_sources(dirs):
     res, _ = dirs
+    _g3_csv(res)
     _live_csv(res)
-    s = mg.live_g3_summary(pd.read_csv(res / "coupled_live.csv")).set_index(["condition", "policy"])
-    row = s.loc[("coupled", "eevdf")]
-    assert (row["scans_per_s"], row["scans_per_s_min"], row["scans_per_s_max"]) == (11.0, 10.0, 12.0)
-    assert (row["catches_per_s"], row["catches_per_s_min"], row["catches_per_s_max"]) == (1.75, 1.5, 2.0)
-    assert s.loc[("coupled", "cgroup_weight"), "scans_per_s"] == 27.0
+    t = mg.g3_slowdown(pd.read_csv(res / "aggregate_g3.csv"), pd.read_csv(res / "coupled_live.csv"))
+    t = t.set_index(["source", "policy", "condition"])["slowdown"]
+    assert t[("sim", "baseline", "starvation")] == 7.0  # mimicry attacker only
+    assert t[("sim", "cgroup_weight", "coupled")] == 1.0
+    assert t[("real", "baseline", "none")] == 1.0  # eevdf is named baseline, as in the sim
+    assert t[("real", "baseline", "coupled")] == 27.0 / 11.0  # median 540/20 over median 220/20
+    assert t[("real", "sched_fifo", "coupled")] == 1.0
+    assert ("real", "iforest", "coupled") not in t
 
 
-def test_g3_real_kernel_writes_and_skips(dirs):
-    res, fig = dirs
-    assert mg.g3_real_kernel() is False
-    _live_csv(res)
-    assert mg.g3_real_kernel() is True
-    assert _png(fig / "G3_real_kernel.png")
+def test_g3_slowdown_keeps_only_the_claimed_priority_attacker(dirs):
+    live = pd.DataFrame(dict(policy="eevdf", condition=["none", "coupled", "none", "coupled"],
+                             attacker_nice=[-20, -20, 0, 0], scans_per_s=[27.0, 9.0, 27.0, 27.0]))
+    t = mg.g3_slowdown(None, live).set_index(["policy", "condition"])["slowdown"]
+    assert t[("baseline", "coupled")] == 3.0
+
+
+def test_g3_draws_real_kernel_alone_and_reads_captured(dirs, tmp_path):
+    _, fig = dirs
+    cap = tmp_path / "captured"
+    cap.mkdir()
+    _live_csv(cap)
+    assert mg.g3_attack_conditions() is True
+    assert _png(fig / "G3_attack_conditions.png")
+
+
+def test_results_csv_wins_over_captured(dirs, tmp_path):
+    res, _ = dirs
+    cap = tmp_path / "captured"
+    cap.mkdir()
+    (cap / "detection_g5.csv").write_text("x\n")
+    assert mg._src("detection_g5.csv") == cap / "detection_g5.csv"
+    (res / "detection_g5.csv").write_text("x\n")
+    assert mg._src("detection_g5.csv") == res / "detection_g5.csv"
+    assert mg._src("missing.csv") is None

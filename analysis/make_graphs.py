@@ -1,6 +1,8 @@
 """Build the figures G1-G6 from the CSVs in results/.
 
-G3-G6 are wired; each skips with a clear message when its CSV is missing. G1
+CSVs that need root or a real kernel (coupled_live.csv, detection_g5.csv) fall
+back to their committed copies in captured/ when results/ has none. G3-G6 are
+wired; each skips with a clear message when its CSV is missing. G1
 and G2 are stubbed with a message naming the memory module whose results feed
 them.
 
@@ -25,6 +27,8 @@ from matplotlib.patches import Patch  # noqa: E402
 
 RESULTS = Path(os.environ.get("RTS_RESULTS_DIR", "./results"))
 FIGURES = Path(os.environ.get("RTS_FIGURES_DIR", "./figures"))
+# Committed copies of the CSVs that need root or a real kernel to produce (#44).
+CAPTURED = Path(os.environ.get("RTS_CAPTURED_DIR", "./captured"))
 
 
 FALLBACK_BLUE = "#47a"
@@ -36,7 +40,8 @@ GROUP_COLORS = {
     "reservation": "#d90",
 }
 G3_CONDITIONS = ["none", "hiding", "starvation", "coupled"]
-G3_POLICIES = ["baseline", "iforest", "rf", "cgroup_weight", "invariant"]
+G3_POLICIES = ["baseline", "iforest", "rf", "sched_fifo", "cgroup_weight", "invariant"]
+G3_LABELS = {"baseline": "EEVDF", "sched_fifo": "SCHED_FIFO", "cgroup_weight": "cpu.weight"}
 
 
 class DetectorStyle(NamedTuple):
@@ -56,6 +61,14 @@ DETECTORS = {
     "heuristic": DetectorStyle("custom + heuristic", "#9467bd", "v", 110),
 }
 DEFAULT_STYLE = DetectorStyle("", "#888888", "D", 110)
+
+
+def _src(name: str) -> Path | None:
+    """A fresh results/ CSV wins over its committed copy in captured/."""
+    for d in (RESULTS, CAPTURED):
+        if (d / name).exists():
+            return d / name
+    return None
 
 
 def _save(fig, name: str) -> Path:
@@ -99,95 +112,68 @@ def _group_legend(groups) -> list:
     return [Patch(color=GROUP_COLORS[g], label=g) for g in GROUP_COLORS if g in present]
 
 
-def g3_attack_conditions() -> bool:
-    """G3: miss rate per attack condition, naive vs mimicry, for a policy subset."""
-    src = RESULTS / "aggregate_g3.csv"
-    if not src.exists():
-        print("[G3] skip: run `python -m sim.run_experiment --policies all --g3` first")
-        return False
-    df = pd.read_csv(src)
-    df = df[df["policy"].isin(G3_POLICIES)]
-    policies = [p for p in G3_POLICIES if p in set(df["policy"])]
+SIM_TO_LIVE = {"baseline": "eevdf", "sched_fifo": "sched_fifo", "cgroup_weight": "cgroup_weight"}
 
-    fig, axes = plt.subplots(1, len(G3_CONDITIONS), figsize=(14, 4.5), sharey=True)
-    width = 0.4
+
+def g3_slowdown(sim: pd.DataFrame | None, live: pd.DataFrame | None) -> pd.DataFrame:
+    """Scanner slowdown vs the no-attack condition, per condition, policy and source.
+
+    Simulation: p95 latency over its `none` value, mimicry attacker. Real kernel:
+    the scan-period ratio, scans/s under `none` over scans/s in the condition
+    (median over reps), for the claimed-priority attacker. 1.0 means unharmed.
+    Policies are named as in the simulation (EEVDF is `baseline`).
+    """
+    parts = []
+    if sim is not None:
+        s = sim[(sim["mimicry"] == True) & sim["policy"].isin(G3_POLICIES)]  # noqa: E712
+        s = s.set_index(["policy", "condition"])["p95_latency"].unstack()
+        parts.append(s.div(s["none"], axis=0).stack().rename("slowdown").reset_index().assign(source="sim"))
+    if live is not None:
+        if "attacker_nice" in live:
+            live = live[live["attacker_nice"] == live["attacker_nice"].min()]
+        r = live.groupby(["policy", "condition"])["scans_per_s"].median().unstack()
+        r = (1 / r).mul(r["none"], axis=0).rename(index={v: k for k, v in SIM_TO_LIVE.items()})
+        parts.append(r.stack().rename("slowdown").reset_index().assign(source="real"))
+    if not parts:
+        return pd.DataFrame(columns=["policy", "condition", "slowdown", "source"])
+    return pd.concat(parts, ignore_index=True)
+
+
+def g3_attack_conditions() -> bool:
+    """G3: scanner slowdown per attack condition, simulation (solid) next to the real kernel (hatched)."""
+    sim_src, live_src = _src("aggregate_g3.csv"), _src("coupled_live.csv")
+    if sim_src is None and live_src is None:
+        print("[G3] skip: run `python -m sim.run_experiment --policies all --g3` "
+              "(and detection/coupled_live.py as root for the real-kernel bars)")
+        return False
+    sim = pd.read_csv(sim_src) if sim_src else None
+    t = g3_slowdown(sim, pd.read_csv(live_src) if live_src else None)
+    groups = dict(zip(sim["policy"], sim["group"], strict=False)) if sim is not None else {}
+    groups.setdefault("baseline", "baseline")
+    policies = [p for p in G3_POLICIES if p in set(t["policy"])]
+
+    fig, axes = plt.subplots(1, len(G3_CONDITIONS), figsize=(15, 4.8), sharey=True)
     for ax, cond in zip(axes, G3_CONDITIONS, strict=True):
-        sub = df[df["condition"] == cond]
-        for k, (mimicry, hatch) in enumerate([(False, ""), (True, "//")]):
-            rows = sub[sub["mimicry"] == mimicry].set_index("policy").reindex(policies)
-            x = [i + (k - 0.5) * width for i in range(len(policies))]
-            err = None
-            if {"miss_rate_q25", "miss_rate_q75"} <= set(rows.columns):
-                err = [
-                    (rows["miss_rate"] - rows["miss_rate_q25"]).clip(lower=0).fillna(0),
-                    (rows["miss_rate_q75"] - rows["miss_rate"]).clip(lower=0).fillna(0),
-                ]
-            ax.bar(
-                x, rows["miss_rate"].fillna(0), width, yerr=err, hatch=hatch,
-                color=[GROUP_COLORS.get(g, FALLBACK_BLUE) for g in rows["group"].fillna("")],
-                edgecolor="white", error_kw={"lw": 1, "capsize": 2},
-            )
+        for i, pol in enumerate(policies):
+            color = GROUP_COLORS.get(groups.get(pol, "reservation"), FALLBACK_BLUE)
+            for source, dx, hatch in [("sim", -0.2, ""), ("real", 0.2, "//")]:
+                v = t[(t["policy"] == pol) & (t["condition"] == cond) & (t["source"] == source)]["slowdown"]
+                if len(v):
+                    ax.bar(i + dx, v.iloc[0], 0.4, color=color, hatch=hatch, edgecolor="white")
+        ax.axhline(1.0, color="black", lw=0.6)
         ax.set_title(cond)
-        ax.set_xticks(range(len(policies)), policies, rotation=40, ha="right")
-        ax.set_ylim(0, 1.05)
-    axes[0].set_ylabel("miss rate (median, IQR bars)")
-    handles = _group_legend(df["group"]) + [
-        Patch(facecolor="#ccc", edgecolor="white", label="naive attacker"),
-        Patch(facecolor="#ccc", edgecolor="white", hatch="//", label="mimicry attacker"),
+        ax.set_xticks(range(len(policies)), [G3_LABELS.get(p, p) for p in policies], rotation=40, ha="right")
+    axes[0].set_ylabel("scanner slowdown vs no attack (x)")
+    handles = _group_legend(groups[p] for p in policies if p in groups) + [
+        Patch(facecolor="#ccc", edgecolor="white", label="simulation: p95 latency ratio (mimicry attacker)"),
+        Patch(facecolor="#ccc", edgecolor="white", hatch="//",
+              label="real kernel: scan period ratio (nice -20 attacker, one core)"),
     ]
-    fig.suptitle("G3: miss rate by attack condition (mimicry only matters where the attacker hogs)", fontsize=11)
-    fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, 0.94), ncol=len(handles), fontsize=8, frameon=False)
-    fig.tight_layout(rect=(0, 0, 1, 0.86))
+    fig.suptitle("G3: how much each attack slows the scanner (1.0 = unharmed)", fontsize=11)
+    fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, 0.94), ncol=4, fontsize=8, frameon=False)
+    fig.tight_layout(rect=(0, 0, 1, 0.84))
     out = _save(fig, "G3_attack_conditions.png")
     print(f"[G3] wrote {out}")
-    return True
-
-
-LIVE_POLICIES = {"eevdf": "baseline", "cgroup_weight": "reservation", "sched_fifo": "reservation"}
-
-
-def live_g3_summary(df: pd.DataFrame) -> pd.DataFrame:
-    """Per condition and policy: median, min and max over reps of scans/s and catches/s."""
-    df = df.assign(catches_per_s=df["catches"] / df["seconds"])
-    g = df.groupby(["condition", "policy"])[["scans_per_s", "catches_per_s"]]
-    out = g.median()
-    for agg in ("min", "max"):
-        out = out.join(g.agg(agg).add_suffix(f"_{agg}"))
-    return out.reset_index()
-
-
-def g3_real_kernel() -> bool:
-    """G3, real kernel: scanner scans/s and catches/s per attack condition and CPU policy."""
-    src = RESULTS / "coupled_live.csv"
-    if not src.exists():
-        print("[G3-live] skip: needs coupled_live.csv from detection/coupled_live.py (root)")
-        return False
-    s = live_g3_summary(pd.read_csv(src))
-    conds = [c for c in G3_CONDITIONS if c in set(s["condition"])]
-    policies = [p for p in LIVE_POLICIES if p in set(s["policy"])]
-    colors = [GROUP_COLORS[LIVE_POLICIES[p]] for p in policies]
-    # Scans share one axis; catches do not, since a never-hiding attacker (none,
-    # starvation) is caught on every scan and would flatten the hiding panels.
-    fig, axes = plt.subplots(2, len(conds), figsize=(3.2 * len(conds), 6.5), squeeze=False)
-    for ax in axes[0][1:]:
-        ax.sharey(axes[0][0])
-    for row, (metric, label) in enumerate([("scans_per_s", "scans per second"),
-                                           ("catches_per_s", "catches per second")]):
-        for ax, cond in zip(axes[row], conds, strict=True):
-            r = s[s["condition"] == cond].set_index("policy").reindex(policies)
-            err = [(r[metric] - r[f"{metric}_min"]).fillna(0), (r[f"{metric}_max"] - r[metric]).fillna(0)]
-            ax.bar(range(len(policies)), r[metric].fillna(0), yerr=err, color=colors,
-                   edgecolor="white", error_kw={"lw": 1, "capsize": 3})
-            ax.set_xticks(range(len(policies)), policies if row else [], rotation=30, ha="right")
-            if row == 0:
-                ax.set_title(cond)
-        axes[row][0].set_ylabel(f"{label}\n(median, min-max bars)")
-    fig.legend(handles=_group_legend([LIVE_POLICIES[p] for p in policies]), loc="upper center",
-               bbox_to_anchor=(0.5, 0.93), ncol=2, fontsize=8, frameon=False)
-    fig.suptitle("G3 (real kernel): the scanner under a nice -20 attacker on one core", fontsize=11)
-    fig.tight_layout(rect=(0, 0, 1, 0.89))
-    out = _save(fig, "G3_real_kernel.png")
-    print(f"[G3-live] wrote {out}")
     return True
 
 
@@ -224,8 +210,8 @@ def pool_detection(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
 
 def g5_detection() -> bool:
     """G5: Tracee catch rate vs false-alarm rate: default, custom, custom + AI or heuristic."""
-    src = RESULTS / "detection_g5.csv"
-    if not src.exists():
+    src = _src("detection_g5.csv")
+    if src is None:
         print("[G5] skip: needs detection_g5.csv from the detection harness")
         return False
     pooled, excluded = pool_detection(pd.read_csv(src))
@@ -261,10 +247,10 @@ def g5_detection() -> bool:
 def g6_overhead() -> bool:
     """G6: scheduler policy compute time (sim) and AI triage latency (detection)."""
     sched_src = RESULTS / "aggregate_mimicry.csv"
-    det_src = RESULTS / "detection_g5.csv"
+    det_src = _src("detection_g5.csv")
     sched = pd.read_csv(sched_src) if sched_src.exists() else None
     triage = None
-    if det_src.exists():
+    if det_src is not None:
         d = pd.read_csv(det_src)
         d = d[(d["detector"] == "ai") & d["triage_backend"].astype(str).str.startswith("llm:")]
         if len(d):
@@ -315,7 +301,6 @@ def main() -> int:
     _stub("G1", "memory/scanner (catch rate vs scan interval)")
     _stub("G2", "memory payloads (slowdown vs evasion Pareto)")
     g3_attack_conditions()
-    g3_real_kernel()
     g5_detection()
     g6_overhead()
     return 0
