@@ -354,3 +354,72 @@ def test_ensure_parent_dir_only_chowns_new_dirs(monkeypatch, tmp_path):
     assert nested.parent.is_dir()
     assert chowned == [tmp_path / "a", tmp_path / "a" / "b"]
     assert tmp_path not in chowned
+
+
+def test_scan_stream_no_entropy_skips_entropy_and_short_circuits(monkeypatch):
+    def _fail_entropy(_data):
+        raise AssertionError("shannon_entropy must not be called when compute_entropy=False")
+
+    monkeypatch.setattr(scanner, "shannon_entropy", _fail_entropy)
+
+    reg1_bytes = bytearray(scanner.PAGE_SIZE)
+    reg1_bytes[64 : 64 + len(scanner.MARKER)] = scanner.MARKER
+    reg2_bytes = random.Random(99).randbytes(scanner.PAGE_SIZE)
+    mem = io.BytesIO(bytes(reg1_bytes) + reg2_bytes)
+    regs = [
+        scanner.Region(0, scanner.PAGE_SIZE, "rw-p", ""),
+        scanner.Region(scanner.PAGE_SIZE, 2 * scanner.PAGE_SIZE, "rw-p", ""),
+    ]
+
+    res = scanner._scan_stream(regs, mem, compute_entropy=False)
+    assert res.marker_found is True
+    assert res.found is True
+    assert res.entropy_flagged is False
+    assert res.high_entropy_pages == 0
+    assert res.max_entropy == 0.0
+    # Short-circuited after region 1 matched the marker; region 2 was never read.
+    assert res.bytes_scanned == scanner.PAGE_SIZE
+    assert res.pages_scanned == 1
+
+
+def test_scan_stream_no_entropy_ignores_high_entropy_page(monkeypatch):
+    def _fail_entropy(_data):
+        raise AssertionError("shannon_entropy must not be called when compute_entropy=False")
+
+    monkeypatch.setattr(scanner, "shannon_entropy", _fail_entropy)
+
+    enc = random.Random(123).randbytes(scanner.PAGE_SIZE)
+    regs = [scanner.Region(0, scanner.PAGE_SIZE, "rw-p", "")]
+    res = scanner._scan_stream(regs, io.BytesIO(enc), compute_entropy=False)
+    assert res.found is False
+    assert res.marker_found is False
+    assert res.entropy_flagged is False
+    assert res.max_entropy == 0.0
+    assert res.pages_scanned == 1
+    assert res.bytes_scanned == scanner.PAGE_SIZE
+
+
+def test_main_no_entropy_flag(monkeypatch, capsys):
+    seen_kwargs: list[dict] = []
+    calls = [0]
+
+    def fake_scan_once(*_args, **kwargs) -> scanner.ScanResult:
+        seen_kwargs.append(kwargs)
+        return scanner.ScanResult(True, True, False, 0.0, 0, 1, scanner.PAGE_SIZE)
+
+    def adv_mono() -> float:
+        calls[0] += 1
+        return 0.0 if calls[0] <= 2 else 1.0
+
+    monkeypatch.setattr(scanner, "_scan_once", fake_scan_once)
+    monkeypatch.setattr(scanner.time, "monotonic", adv_mono)
+
+    rc = scanner.main(["--pid", "123", "--duration", "0.5", "--no-entropy", "--no-csv"])
+    assert rc == 0
+    assert len(seen_kwargs) == 1
+    assert seen_kwargs[0]["compute_entropy"] is False
+    assert seen_kwargs[0]["catch_on_entropy"] is False
+    out = capsys.readouterr().out
+    scan_lines = [line for line in out.splitlines() if line.startswith("scan ")]
+    assert len(scan_lines) == 1
+    assert COUPLED_LIVE_SCAN_RE.match(scan_lines[0])
