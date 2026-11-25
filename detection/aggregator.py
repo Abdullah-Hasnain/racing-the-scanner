@@ -79,8 +79,9 @@ def _flip(prev: Prot, new: Prot) -> Flip | None:
 
 
 def _int(value: int | str) -> int:
-    """An int Tracee printed raw or as a hex string (pointers, "0x0")."""
-    return int(value, 16) if isinstance(value, str) else int(value)
+    """An int Tracee printed raw or as a string: hex with 0x (pointers, "0x0"),
+    or decimal as hand-written fixtures may quote it ("4096")."""
+    return int(value, 0) if isinstance(value, str) else int(value)
 
 
 def _args(event: dict) -> dict:
@@ -174,7 +175,7 @@ def aggregate(lines) -> dict[int, ProcessFeatures]:
             w.mprotect(ev)
         if name == "rt_sigaction" and _installs_segv_handler(ev):
             w.segv_handlers += 1
-        if ev.get("metadata", {}).get("Properties", {}).get("signatureName"):
+        if ((ev.get("metadata") or {}).get("Properties") or {}).get("signatureName"):
             w.alerts += 1
     return procs
 
