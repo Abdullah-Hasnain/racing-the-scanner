@@ -2,12 +2,13 @@
 
 Runs the C memory payloads (v1..v4) against the live RAM scanner
 (memory/scanner/scanner.py) across the #38 parameter grid and writes one row
-per run/rep to results/g1_scan.csv for analysis/make_graphs.py.
+per run/rep to results/g1_scan.csv (or results/g1_scan_smoke.csv with --smoke)
+for analysis/make_graphs.py.
 
 Linux only at runtime (targets /proc/<pid>/mem via scanner.py).
 
 Usage:
-  python3 -m memory.sweep_g1 --smoke
+  sudo python3 -m memory.sweep_g1 --smoke
   sudo python3 -m memory.sweep_g1
 """
 
@@ -23,8 +24,7 @@ import subprocess
 import sys
 import tempfile
 import threading
-from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -43,6 +43,7 @@ DEFAULT_PATTERN = "seq"
 DEFAULT_REPS = 3
 DEFAULT_DURATION_S = 10.0
 DEFAULT_LONG_DURATION_S = 20.0
+MIN_ELAPSED_FRACTION = 0.9
 
 SMOKE_INTERVALS = (0.05, 0.5)
 SMOKE_DWELLS_MS = (5.0, 25.0)
@@ -79,6 +80,10 @@ class PayloadStartError(RuntimeError):
     """Raised when a payload binary fails to start or report its PID."""
 
 
+class IncompleteCellError(RuntimeError):
+    """Raised when a cell is interrupted or ends well short of its requested duration."""
+
+
 @dataclass(frozen=True)
 class SweepCell:
     """Single execution unit in the G1 parameter sweep."""
@@ -105,12 +110,16 @@ def _cell_key(
     variant: str,
     dwell_ms: float | str | None,
     interval_s: float | str,
+    pattern: str,
+    duration_s: float | str,
     rep: int | str,
-) -> tuple[str, str, str, int]:
+) -> tuple[str, str, str, str, str, int]:
     return (
         variant.strip(),
         _norm_float_str(dwell_ms),
         _norm_float_str(interval_s),
+        pattern.strip(),
+        _norm_float_str(duration_s),
         int(rep),
     )
 
@@ -147,11 +156,11 @@ def build_sweep_grid(
     return cells
 
 
-def _load_completed_keys(csv_path: Path) -> set[tuple[str, str, str, int]]:
+def _load_completed_keys(csv_path: Path) -> set[tuple[str, str, str, str, str, int]]:
     """Return normalized keys of rows already present in `csv_path`."""
     if not scanner._validate_csv_header(csv_path, G1_FIELDS):
         return set()
-    completed: set[tuple[str, str, str, int]] = set()
+    completed: set[tuple[str, str, str, str, str, int]] = set()
     with csv_path.open("r", newline="", encoding="utf-8") as fh:
         for row in csv.DictReader(fh):
             completed.add(
@@ -159,6 +168,8 @@ def _load_completed_keys(csv_path: Path) -> set[tuple[str, str, str, int]]:
                     row["variant"],
                     row["dwell_ms"],
                     row["interval_s"],
+                    row["pattern"],
+                    row["duration_s"],
                     row["rep"],
                 )
             )
@@ -176,52 +187,24 @@ def _make_pin_fn(cpu: int | None) -> Callable[[], None] | None:
     return _pin
 
 
-@contextmanager
-def _unprivileged_uffd_guard(
+def _warn_if_unprivileged_uffd_disabled(
     variants: Sequence[str],
     sysctl_path: Path = UFFD_SYSCTL_PATH,
-) -> Iterator[None]:
-    """Temporarily enable vm.unprivileged_userfaultfd when running V3 as root."""
+) -> None:
+    """Warn non-root callers when vm.unprivileged_userfaultfd=0 for V3."""
     if "v3" not in variants or not sysctl_path.exists():
-        yield
         return
-
     try:
-        orig = sysctl_path.read_text(encoding="utf-8").strip()
+        cur = sysctl_path.read_text(encoding="utf-8").strip()
     except OSError:
-        yield
         return
-
     is_root = hasattr(os, "geteuid") and os.geteuid() == 0
-    if orig == "0":
-        if is_root:
-            try:
-                sysctl_path.write_text("1\n", encoding="utf-8")
-            except OSError as exc:
-                print(
-                    f"[sweep_g1] warning: could not enable {sysctl_path}: {exc}",
-                    file=sys.stderr,
-                )
-                yield
-                return
-            try:
-                yield
-            finally:
-                try:
-                    sysctl_path.write_text("0\n", encoding="utf-8")
-                except OSError as exc:
-                    print(
-                        f"[sweep_g1] warning: could not restore {sysctl_path} to 0: {exc}",
-                        file=sys.stderr,
-                    )
-            return
-
+    if cur == "0" and not is_root:
         print(
             f"[sweep_g1] warning: {sysctl_path}=0 and not running as root; "
-            "v3 may fall back to UFFD_USER_MODE_ONLY",
+            "v3 may fall back to UFFD_USER_MODE_ONLY (run as root for CAP_SYS_PTRACE)",
             file=sys.stderr,
         )
-    yield
 
 
 def _read_first_line(proc: subprocess.Popen[str], timeout_s: float) -> str | None:
@@ -324,7 +307,12 @@ def _make_run_id(cell: SweepCell) -> str:
     return f"g1-{cell.variant}-{dwell_tag}-{cell.interval_s:g}s-r{cell.rep}-{ts}"
 
 
-def _build_g1_row(cell: SweepCell, summary_row: dict[str, str]) -> dict[str, object]:
+def _build_g1_row(
+    cell: SweepCell,
+    summary_row: dict[str, str],
+    *,
+    with_entropy: bool,
+) -> dict[str, object]:
     return {
         "run_id": summary_row["run_id"],
         "rep": cell.rep,
@@ -340,7 +328,7 @@ def _build_g1_row(cell: SweepCell, summary_row: dict[str, str]) -> dict[str, obj
         "p50_scan_ms": summary_row["p50_scan_ms"],
         "p95_scan_ms": summary_row["p95_scan_ms"],
         "p99_scan_ms": summary_row["p99_scan_ms"],
-        "max_entropy": summary_row["max_entropy"],
+        "max_entropy": summary_row["max_entropy"] if with_entropy else "",
     }
 
 
@@ -352,6 +340,7 @@ def run_cell(
     touch_interval_ms: float,
     with_entropy: bool,
     pin_fn: Callable[[], None] | None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> dict[str, object]:
     """Run one (variant, interval, dwell, rep) cell and append its row to `out_csv`."""
     bin_path = bin_dir / cell.variant
@@ -405,6 +394,8 @@ def run_cell(
                 run_kwargs["preexec_fn"] = pin_fn
 
             res = subprocess.run(cmd, **run_kwargs)  # type: ignore[call-overload]
+            if should_stop is not None and should_stop():
+                raise IncompleteCellError("interrupted while cell was in flight")
             if res.returncode != 0:
                 err = (res.stderr or res.stdout or "").strip()
                 raise RuntimeError(
@@ -418,7 +409,15 @@ def run_cell(
             if not rows:
                 raise RuntimeError(f"scanner produced 0 summary rows for {cell.variant}")
 
-            g1_row = _build_g1_row(cell, rows[-1])
+            summary_row = rows[-1]
+            elapsed_s = float(summary_row.get("elapsed_s", "0") or 0.0)
+            min_elapsed = cell.duration_s * MIN_ELAPSED_FRACTION
+            if elapsed_s < min_elapsed:
+                raise IncompleteCellError(
+                    f"{cell.variant} ended early: elapsed={elapsed_s:.2f}s < {min_elapsed:.2f}s"
+                )
+
+            g1_row = _build_g1_row(cell, summary_row, with_entropy=with_entropy)
     finally:
         _stop_payload(proc)
 
@@ -433,7 +432,18 @@ def run_cell(
 
 
 def _default_cpu() -> int | None:
-    return 0 if hasattr(os, "sched_setaffinity") else None
+    if not hasattr(os, "sched_setaffinity"):
+        return None
+    if hasattr(os, "sched_getaffinity"):
+        try:
+            avail = sorted(os.sched_getaffinity(0))
+            if 2 in avail:
+                return 2
+            if avail:
+                return avail[-1]
+        except OSError:
+            pass
+    return 2
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -492,13 +502,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     ap.add_argument(
         "--smoke",
         action="store_true",
-        help="fast verification grid (intervals 0.05 0.5, dwells 5 25, reps 1, duration 2s)",
+        help="fast verification grid -> g1_scan_smoke.csv (0.05/0.5s, 5/25ms, 1 rep, 2s)",
     )
     ap.add_argument(
         "--cpu",
         type=int,
         default=_default_cpu(),
-        help="CPU core to pin payload and scanner (-1 to disable; default: 0 on Linux)",
+        help="CPU core to pin payload and scanner (-1 to disable; default: 2 on Linux)",
     )
     ap.add_argument(
         "--no-pin",
@@ -513,7 +523,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     ap.add_argument(
         "--resume",
         action="store_true",
-        help="skip (variant, dwell_ms, interval_s, rep) cells already in g1_scan.csv",
+        help="skip (variant, dwell_ms, interval_s, pattern, duration_s, rep) cells already in CSV",
     )
     ap.add_argument(
         "--strict",
@@ -536,7 +546,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--out-csv",
         type=Path,
         default=None,
-        help="override output CSV path (default: <out-dir>/g1_scan.csv)",
+        help="override output CSV path (default: <out-dir>/g1_scan.csv or g1_scan_smoke.csv)",
     )
 
     args = ap.parse_args(argv)
@@ -574,7 +584,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
-    out_csv = args.out_csv or (args.out_dir / "g1_scan.csv")
+    default_name = "g1_scan_smoke.csv" if args.smoke else "g1_scan.csv"
+    out_csv = args.out_csv or (args.out_dir / default_name)
+
+    if args.resume and args.touch_interval_ms != DEFAULT_TOUCH_INTERVAL_MS:
+        print(
+            "[sweep_g1] warning: --touch-interval-ms is not stored in CSV and is not checked by --resume",
+            file=sys.stderr,
+        )
 
     try:
         completed = _load_completed_keys(out_csv) if args.resume else set()
@@ -612,58 +629,80 @@ def main(argv: Sequence[str] | None = None) -> int:
     total = len(cells)
 
     try:
-        with _unprivileged_uffd_guard(args.variants):
-            for idx, cell in enumerate(cells, start=1):
-                if stop:
-                    print("[sweep_g1] interrupted; stopping after completed cell", flush=True)
-                    break
-                if cell.variant in skipped_variants:
-                    skipped += 1
-                    continue
-                if args.resume and _cell_key(
-                    cell.variant, cell.dwell_ms, cell.interval_s, cell.rep
-                ) in completed:
-                    skipped += 1
-                    continue
-
-                dwell_label = "n/a" if cell.dwell_ms is None else f"{cell.dwell_ms:g}ms"
-                print(
-                    f"[sweep_g1] ({idx}/{total}) {cell.variant} dwell={dwell_label} "
-                    f"interval={cell.interval_s:g}s dur={cell.duration_s:g}s rep={cell.rep}",
-                    flush=True,
+        _warn_if_unprivileged_uffd_disabled(args.variants)
+        for idx, cell in enumerate(cells, start=1):
+            if stop:
+                print("[sweep_g1] interrupted; stopping after completed cell", flush=True)
+                break
+            if cell.variant in skipped_variants:
+                skipped += 1
+                continue
+            if (
+                args.resume
+                and _cell_key(
+                    cell.variant,
+                    cell.dwell_ms,
+                    cell.interval_s,
+                    cell.pattern,
+                    cell.duration_s,
+                    cell.rep,
                 )
+                in completed
+            ):
+                skipped += 1
+                continue
 
-                try:
-                    row = run_cell(
-                        cell,
-                        bin_dir=args.bin_dir,
-                        out_csv=out_csv,
-                        touch_interval_ms=args.touch_interval_ms,
-                        with_entropy=args.with_entropy,
-                        pin_fn=pin_fn,
+            dwell_label = "n/a" if cell.dwell_ms is None else f"{cell.dwell_ms:g}ms"
+            print(
+                f"[sweep_g1] ({idx}/{total}) {cell.variant} dwell={dwell_label} "
+                f"interval={cell.interval_s:g}s dur={cell.duration_s:g}s rep={cell.rep}",
+                flush=True,
+            )
+
+            try:
+                row = run_cell(
+                    cell,
+                    bin_dir=args.bin_dir,
+                    out_csv=out_csv,
+                    touch_interval_ms=args.touch_interval_ms,
+                    with_entropy=args.with_entropy,
+                    pin_fn=pin_fn,
+                    should_stop=lambda: stop,
+                )
+            except PayloadStartError as exc:
+                if cell.variant == "v4" and not args.strict:
+                    print(
+                        f"[sweep_g1] warning: skipping remaining v4 cells ({exc})",
+                        file=sys.stderr,
+                        flush=True,
                     )
-                except PayloadStartError as exc:
-                    if cell.variant == "v4" and not args.strict:
-                        print(
-                            f"[sweep_g1] warning: skipping remaining v4 cells ({exc})",
-                            file=sys.stderr,
-                            flush=True,
-                        )
-                        skipped_variants.add("v4")
-                        skipped += 1
-                        continue
-                    print(f"[sweep_g1] error: {exc}", file=sys.stderr)
-                    return 1
+                    skipped_variants.add("v4")
+                    skipped += 1
+                    continue
+                print(f"[sweep_g1] error: {exc}", file=sys.stderr)
+                return 1
+            except IncompleteCellError as exc:
+                if stop:
+                    print(
+                        "[sweep_g1] interrupted; discarded incomplete in-flight cell",
+                        flush=True,
+                    )
+                    return 130
+                print(f"[sweep_g1] error: {exc}", file=sys.stderr)
+                return 1
 
-                ran += 1
-                print(
-                    f"  -> scans={row['scans']} catches={row['catches']} "
-                    f"catch_rate={row['catch_rate']} p50={row['p50_scan_ms']}ms",
-                    flush=True,
-                )
+            ran += 1
+            print(
+                f"  -> scans={row['scans']} catches={row['catches']} "
+                f"catch_rate={row['catch_rate']} p50={row['p50_scan_ms']}ms",
+                flush=True,
+            )
     finally:
         signal.signal(signal.SIGINT, prev_sigint)
         signal.signal(signal.SIGTERM, prev_sigterm)
+
+    if stop:
+        return 130
 
     print(f"[sweep_g1] done: ran={ran}, skipped={skipped}, csv={out_csv}", flush=True)
     return 0

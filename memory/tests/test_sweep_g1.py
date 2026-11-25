@@ -56,7 +56,12 @@ def _touch_binaries(bin_dir: Path, variants: tuple[str, ...] = sweep_g1.VARIANTS
         (bin_dir / v).write_text("", encoding="utf-8")
 
 
-def _write_fake_summary_csv(path: Path, cmd: list[str]) -> None:
+def _write_fake_summary_csv(
+    path: Path,
+    cmd: list[str],
+    *,
+    elapsed_s: str | None = None,
+) -> None:
     arg_map: dict[str, str] = {}
     i = 0
     while i < len(cmd):
@@ -66,6 +71,7 @@ def _write_fake_summary_csv(path: Path, cmd: list[str]) -> None:
         else:
             i += 1
 
+    duration_s = arg_map.get("--duration", "10")
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=scanner.SUMMARY_FIELDS)
@@ -77,8 +83,8 @@ def _write_fake_summary_csv(path: Path, cmd: list[str]) -> None:
                 "pid": arg_map.get("--pid", "4242"),
                 "interval_s": arg_map.get("--interval", "0.05"),
                 "dwell_ms": arg_map.get("--dwell-ms", ""),
-                "duration_s": arg_map.get("--duration", "10"),
-                "elapsed_s": arg_map.get("--duration", "10"),
+                "duration_s": duration_s,
+                "elapsed_s": duration_s if elapsed_s is None else elapsed_s,
                 "entropy_threshold": "7.2",
                 "scans": "20",
                 "catches": "4",
@@ -91,7 +97,7 @@ def _write_fake_summary_csv(path: Path, cmd: list[str]) -> None:
                 "p50_scan_ms": "1.1",
                 "p95_scan_ms": "2.2",
                 "p99_scan_ms": "2.5",
-                "max_entropy": "0.0",
+                "max_entropy": "0.0" if "--no-entropy" in cmd else "7.85",
             }
         )
 
@@ -116,7 +122,10 @@ def test_build_sweep_grid_defaults():
     assert len(v3_cells) == 60
 
     assert all(c.dwell_ms is None and c.pattern == "" for c in v1_cells + v4_cells)
-    assert all(c.dwell_ms in sweep_g1.DEFAULT_DWELLS_MS and c.pattern == "seq" for c in v2_cells + v3_cells)
+    assert all(
+        c.dwell_ms in sweep_g1.DEFAULT_DWELLS_MS and c.pattern == "seq"
+        for c in v2_cells + v3_cells
+    )
 
     for c in cells:
         expected_dur = 20.0 if c.interval_s >= 5.0 else 10.0
@@ -156,6 +165,39 @@ def test_smoke_grid_and_cli_validation():
             sweep_g1.parse_args(bad_argv)
 
 
+def test_smoke_writes_to_g1_scan_smoke_csv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    bin_dir = tmp_path / "bin"
+    out_dir = tmp_path / "results"
+    _touch_binaries(bin_dir, ("v1",))
+
+    def _fake_popen(cmd, **kwargs):
+        return _FakeProc(pid=3131, stdout_lines=["[v1] pid=3131 ready\n"])
+
+    def _fake_run(cmd, **kwargs):
+        summary_path = Path(cmd[cmd.index("--summary-csv") + 1])
+        _write_fake_summary_csv(summary_path, cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sweep_g1.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(sweep_g1.subprocess, "run", _fake_run)
+
+    rc = sweep_g1.main(
+        [
+            "--variants",
+            "v1",
+            "--smoke",
+            "--no-pin",
+            "--bin-dir",
+            str(bin_dir),
+            "--out-dir",
+            str(out_dir),
+        ]
+    )
+    assert rc == 0
+    assert (out_dir / "g1_scan_smoke.csv").exists()
+    assert not (out_dir / "g1_scan.csv").exists()
+
+
 def test_resume_key_normalization(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     bin_dir = tmp_path / "bin"
     out_dir = tmp_path / "results"
@@ -174,7 +216,7 @@ def test_resume_key_normalization(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
                 "dwell_ms": "",
                 "interval_s": "0.50",
                 "pattern": "",
-                "duration_s": "2",
+                "duration_s": "2.0",
                 "scans": "4",
                 "catches": "4",
                 "catch_rate": "1.0",
@@ -182,7 +224,7 @@ def test_resume_key_normalization(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
                 "p50_scan_ms": "1.0",
                 "p95_scan_ms": "1.2",
                 "p99_scan_ms": "1.3",
-                "max_entropy": "0.0",
+                "max_entropy": "",
             }
         )
         writer.writerow(
@@ -193,7 +235,7 @@ def test_resume_key_normalization(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
                 "dwell_ms": "10.0",
                 "interval_s": "0.50",
                 "pattern": "seq",
-                "duration_s": "2",
+                "duration_s": "2.0",
                 "scans": "4",
                 "catches": "1",
                 "catch_rate": "0.25",
@@ -201,13 +243,13 @@ def test_resume_key_normalization(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
                 "p50_scan_ms": "1.0",
                 "p95_scan_ms": "1.2",
                 "p99_scan_ms": "1.3",
-                "max_entropy": "0.0",
+                "max_entropy": "",
             }
         )
 
     completed = sweep_g1._load_completed_keys(out_csv)
-    assert ("v1", "", "0.5", 1) in completed
-    assert ("v2", "10", "0.5", 1) in completed
+    assert ("v1", "", "0.5", "", "2", 1) in completed
+    assert ("v2", "10", "0.5", "seq", "2", 1) in completed
 
     launched_cmds: list[list[str]] = []
 
@@ -222,8 +264,8 @@ def test_resume_key_normalization(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr(sweep_g1.subprocess, "Popen", _fake_popen)
     monkeypatch.setattr(sweep_g1.subprocess, "run", _fake_run)
-    monkeypatch.setattr(sweep_g1, "_unprivileged_uffd_guard", sweep_g1._unprivileged_uffd_guard)
 
+    # Matching duration/pattern skips v1 and v2@10ms, running only v2@25ms.
     rc = sweep_g1.main(
         [
             "--variants",
@@ -248,12 +290,61 @@ def test_resume_key_normalization(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     )
     assert rc == 0
     assert len(launched_cmds) == 1
-    assert "--dwell-ms" in launched_cmds[0]
     assert launched_cmds[0][launched_cmds[0].index("--dwell-ms") + 1] == "25"
 
-    with out_csv.open("r", newline="", encoding="utf-8") as fh:
-        rows = list(csv.DictReader(fh))
-    assert len(rows) == 3
+    # Changing --pattern or --duration must NOT falsely skip the pre-existing cell.
+    launched_cmds.clear()
+    rc2 = sweep_g1.main(
+        [
+            "--variants",
+            "v2",
+            "--intervals",
+            "0.5",
+            "--dwell-ms",
+            "10",
+            "--pattern",
+            "random",
+            "--reps",
+            "1",
+            "--duration",
+            "2",
+            "--resume",
+            "--no-pin",
+            "--bin-dir",
+            str(bin_dir),
+            "--out-dir",
+            str(out_dir),
+        ]
+    )
+    assert rc2 == 0
+    assert len(launched_cmds) == 1
+    assert launched_cmds[0][launched_cmds[0].index("--pattern") + 1] == "random"
+
+    launched_cmds.clear()
+    rc3 = sweep_g1.main(
+        [
+            "--variants",
+            "v2",
+            "--intervals",
+            "0.5",
+            "--dwell-ms",
+            "10",
+            "--pattern",
+            "seq",
+            "--reps",
+            "1",
+            "--duration",
+            "10",
+            "--resume",
+            "--no-pin",
+            "--bin-dir",
+            str(bin_dir),
+            "--out-dir",
+            str(out_dir),
+        ]
+    )
+    assert rc3 == 0
+    assert len(launched_cmds) == 1
 
 
 def test_run_sweep_writes_g1_scan_csv_and_isolates_temp_csvs(
@@ -318,16 +409,37 @@ def test_run_sweep_writes_g1_scan_csv_and_isolates_temp_csvs(
     assert rows[0]["variant"] == "v1"
     assert rows[0]["dwell_ms"] == ""
     assert rows[0]["pattern"] == ""
+    assert rows[0]["max_entropy"] == ""
     assert rows[1]["variant"] == "v2"
     assert rows[1]["dwell_ms"] == "5"
     assert rows[1]["pattern"] == "seq"
+    assert rows[1]["max_entropy"] == ""
 
-    # --with-entropy omits --no-entropy, and payload is still terminated when scanner fails.
+    # --with-entropy omits --no-entropy and records scanner's max_entropy.
     scanner_cmds.clear()
+    procs.clear()
+    row = sweep_g1.run_cell(
+        sweep_g1.SweepCell(
+            variant="v2",
+            interval_s=0.05,
+            dwell_ms=5.0,
+            pattern="seq",
+            rep=1,
+            duration_s=2.0,
+        ),
+        bin_dir=bin_dir,
+        out_csv=out_csv,
+        touch_interval_ms=100.0,
+        with_entropy=True,
+        pin_fn=None,
+    )
+    assert "--no-entropy" not in scanner_cmds[0]
+    assert row["max_entropy"] == "7.85"
+
+    # Payload is still terminated when scanner fails.
     procs.clear()
 
     def _failing_run(cmd, **kwargs):
-        scanner_cmds.append(list(cmd))
         return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
 
     monkeypatch.setattr(sweep_g1.subprocess, "run", _failing_run)
@@ -347,8 +459,74 @@ def test_run_sweep_writes_g1_scan_csv_and_isolates_temp_csvs(
             with_entropy=True,
             pin_fn=None,
         )
-    assert "--no-entropy" not in scanner_cmds[0]
     assert procs[0].terminated is True
+
+
+def test_incomplete_cell_not_written(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    bin_dir = tmp_path / "bin"
+    out_dir = tmp_path / "results"
+    out_csv = out_dir / "g1_scan.csv"
+    _touch_binaries(bin_dir, ("v2",))
+
+    def _fake_popen(cmd, **kwargs):
+        return _FakeProc(pid=5151, stdout_lines=["[v2] pid=5151 ready\n"])
+
+    # Case A: payload died early (elapsed_s=0.5s out of 10.0s).
+    def _early_run(cmd, **kwargs):
+        summary_path = Path(cmd[cmd.index("--summary-csv") + 1])
+        _write_fake_summary_csv(summary_path, cmd, elapsed_s="0.5")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sweep_g1.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(sweep_g1.subprocess, "run", _early_run)
+
+    rc = sweep_g1.main(
+        [
+            "--variants",
+            "v2",
+            "--intervals",
+            "0.05",
+            "--dwell-ms",
+            "5",
+            "--reps",
+            "1",
+            "--duration",
+            "10",
+            "--no-pin",
+            "--bin-dir",
+            str(bin_dir),
+            "--out-dir",
+            str(out_dir),
+        ]
+    )
+    assert rc == 1
+    assert not out_csv.exists()
+
+    # Case B: interrupted mid-cell (should_stop=True) even if elapsed_s looks complete.
+    def _full_run(cmd, **kwargs):
+        summary_path = Path(cmd[cmd.index("--summary-csv") + 1])
+        _write_fake_summary_csv(summary_path, cmd, elapsed_s="10.0")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sweep_g1.subprocess, "run", _full_run)
+    with pytest.raises(sweep_g1.IncompleteCellError, match="interrupted"):
+        sweep_g1.run_cell(
+            sweep_g1.SweepCell(
+                variant="v2",
+                interval_s=0.05,
+                dwell_ms=5.0,
+                pattern="seq",
+                rep=1,
+                duration_s=10.0,
+            ),
+            bin_dir=bin_dir,
+            out_csv=out_csv,
+            touch_interval_ms=100.0,
+            with_entropy=False,
+            pin_fn=None,
+            should_stop=lambda: True,
+        )
+    assert not out_csv.exists()
 
 
 def test_v4_graceful_skip_and_strict_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -420,22 +598,21 @@ def test_v4_graceful_skip_and_strict_mode(tmp_path: Path, monkeypatch: pytest.Mo
     assert rc_strict == 1
 
 
-def test_unprivileged_uffd_guard_flips_and_restores(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_unprivileged_uffd_does_not_modify_sysctl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
     sysctl_file = tmp_path / "unprivileged_userfaultfd"
     sysctl_file.write_text("0\n", encoding="utf-8")
+
     monkeypatch.setattr(os, "geteuid", lambda: 0, raising=False)
-
-    with sweep_g1._unprivileged_uffd_guard(["v3"], sysctl_path=sysctl_file):
-        assert sysctl_file.read_text(encoding="utf-8").strip() == "1"
+    sweep_g1._warn_if_unprivileged_uffd_disabled(["v3"], sysctl_path=sysctl_file)
     assert sysctl_file.read_text(encoding="utf-8").strip() == "0"
+    assert capsys.readouterr().err == ""
 
-    with pytest.raises(RuntimeError, match="boom"):
-        with sweep_g1._unprivileged_uffd_guard(["v3"], sysctl_path=sysctl_file):
-            assert sysctl_file.read_text(encoding="utf-8").strip() == "1"
-            raise RuntimeError("boom")
+    monkeypatch.setattr(os, "geteuid", lambda: 1000, raising=False)
+    sweep_g1._warn_if_unprivileged_uffd_disabled(["v3"], sysctl_path=sysctl_file)
     assert sysctl_file.read_text(encoding="utf-8").strip() == "0"
+    assert "CAP_SYS_PTRACE" in capsys.readouterr().err
 
 
 def test_pin_fn_calls_sched_setaffinity(monkeypatch: pytest.MonkeyPatch):
@@ -445,9 +622,14 @@ def test_pin_fn_calls_sched_setaffinity(monkeypatch: pytest.MonkeyPatch):
         calls.append((pid, set(cpus)))
 
     monkeypatch.setattr(os, "sched_setaffinity", _fake_affinity, raising=False)
+    monkeypatch.setattr(os, "sched_getaffinity", lambda _pid: {0, 1, 2, 3}, raising=False)
+    assert sweep_g1._default_cpu() == 2
+
+    monkeypatch.setattr(os, "sched_getaffinity", lambda _pid: {0, 1}, raising=False)
+    assert sweep_g1._default_cpu() == 1
 
     assert sweep_g1._make_pin_fn(None) is None
-    pin_fn = sweep_g1._make_pin_fn(0)
+    pin_fn = sweep_g1._make_pin_fn(2)
     assert pin_fn is not None
     pin_fn()
-    assert calls == [(0, {0})]
+    assert calls == [(0, {2})]
