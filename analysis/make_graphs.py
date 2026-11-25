@@ -396,7 +396,9 @@ def g6_overhead() -> bool:
         sched = sched.sort_values("overhead_ms")
         ax.barh(sched["policy"], sched["overhead_ms"], color=[GROUP_COLORS.get(g, FALLBACK_BLUE) for g in sched["group"]])
         ax.invert_yaxis()
-        ax.set_xlabel("policy compute time (decide + allocate), real wall-clock per run (ms)")
+        # log, so the reservations' few ms show next to the ML policies' hundreds
+        ax.set_xscale("log" if (sched["overhead_ms"] > 0).all() else "symlog")
+        ax.set_xlabel("policy compute time (decide + allocate), real wall-clock per run (ms, log)")
         ax.set_title("G6a: scheduler policy compute time")
         legend_handles = _group_legend(sched["group"])
     if triage is not None:
