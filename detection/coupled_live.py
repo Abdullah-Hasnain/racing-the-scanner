@@ -120,6 +120,15 @@ def _join(cgroup: Path, pid: int) -> None:
     (cgroup / "cgroup.procs").write_text(str(pid))
 
 
+def scanner_command(repo: str, pid: int, interval: float, duration: float) -> list[str]:
+    """The live scanner, timed the way #34's captured run was: no entropy pass
+    (it makes each scan ~40x slower, #47) and no CSV (as root it would leave
+    root-owned files in results/; the scan lines on stdout are what we read)."""
+    return [sys.executable, str(Path(repo) / "memory/scanner/scanner.py"),
+            "--pid", str(pid), "--interval", str(interval), "--duration", str(duration),
+            "--no-entropy", "--no-csv"]
+
+
 def run_cell(args: argparse.Namespace, policy: str, condition: str) -> dict:
     """One run on one core. The scanner is already scanning when the attack
     starts: the hogs begin after its first scan, and only scans in the next
@@ -138,9 +147,7 @@ def run_cell(args: argparse.Namespace, policy: str, condition: str) -> dict:
         _join(attacker, target.pid)
         time.sleep(1)  # let V2 lock its buffer before the first scan
         scanner = subprocess.Popen(
-            [sys.executable, str(Path(args.repo) / "memory/scanner/scanner.py"),
-             "--pid", str(target.pid), "--interval", str(args.interval),
-             "--duration", str(args.seconds + 5)],
+            scanner_command(args.repo, target.pid, args.interval, args.seconds + 5),
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             env={**os.environ, "PYTHONUNBUFFERED": "1"},
             preexec_fn=_child_setup(args.cpu, fifo=pol.fifo),

@@ -33,3 +33,15 @@ def test_summarize_with_no_scans_has_no_latency():
     s = summarize(["[scanner] target process gone"], seconds=1.0)
     assert (s.scans, s.catches, s.scans_per_s) == (0, 0, 0.0)
     assert s.p50_scan_ms is None and s.p95_scan_ms is None
+
+
+def test_scanner_skips_entropy_and_csv():
+    # The entropy pass makes each scan ~40x slower (#47), so a scanner run with it
+    # would be starved differently from the captured G3 run. As root, the CSV
+    # would also leave root-owned files in results/.
+    from detection.coupled_live import scanner_command
+
+    cmd = scanner_command("/repo", pid=42, interval=0.037, duration=25)
+    assert cmd[1] == "/repo/memory/scanner/scanner.py"
+    assert {"--no-entropy", "--no-csv"} <= set(cmd)
+    assert cmd[cmd.index("--pid") + 1] == "42"
