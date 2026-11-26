@@ -31,6 +31,7 @@ Separately, because normal apps (Node.js JIT, Go/Java GC, jemalloc) use the same
 | `memory/` | Khan (@khan-slayer) | The four hiding payloads (V1-V4) in C and the live RAM scanner. Linux only. |
 | `detection/` | Ibad (@vanodew1) | Aqua Tracee policies, the per-PID log aggregator, the local-LLM triage, benign workload runners. |
 | `analysis/` | shared | Builds graphs G1-G6 from `results/`. |
+| `report/` | all | The final IEEE report: `main.tex`, the built `main.pdf` and its figures (see `report/README.md`). |
 | `docs/` | all | Architecture, hardware roles, per-OS setup guides. |
 | `scripts/` | all | Setup, demo, and issue-creation helpers. |
 | `.github/` | all | CI workflows and issue/PR templates. |
@@ -123,4 +124,4 @@ The systems pieces (C payloads, the scanner, Tracee, any real `scx` work) need *
 - **Real kernel:** the sched_ext spike passes on kernel 7.0 and the `scx_qmap` per-PID weight demo runs (#10, #11). The coupled attack on the real kernel (`detection/coupled_live.py`) shows stock EEVDF starving the scanner and `cpu.weight` / `SCHED_FIFO` protecting it.
 - **Memory (`memory/`):** V1-V4 payloads, the live scanner, and the G1/G2 sweeps (`memory/sweep_g1.py`, `sweep_g2.py`). The final runs on bare metal are in `captured/` (#56). Per scan, the scanner catches a hiding page about as often as it is exposed, at any scan interval: about dwell / 100 ms for V2, and a few ms more for V3 (0.05 of scans at 1 ms dwell); a longer interval only delays the first catch.
 - **Detection (`detection/`):** Tracee policy, aggregator, LLM triage, benign suite and the G5 harness. On the held-out capture the custom rule catches 15/15 hiding processes with 0/30 false alarms; Tracee's default signatures catch 0/15.
-- **Figures:** all six, G1-G6, build on a fresh clone with `scripts/run_demo.sh`, from `results/` or the committed `captured/` data (#16). Remaining work (the report, #60, and the slides, #61) is tracked in milestone M5.
+- **Figures:** all six, G1-G6, build on a fresh clone with `scripts/run_demo.sh`, from `results/` or the committed `captured/` data (#16). The final report (#60) is in `report/`; the slides (#61) are tracked in milestone M5.
