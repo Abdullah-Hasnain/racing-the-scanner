@@ -56,6 +56,7 @@ POLICIES = ["detection/tracee/memory-hiding.yaml", "detection/tracee/default-sig
 UFFD_SYSCTL = Path("/proc/sys/vm/unprivileged_userfaultfd")
 BENIGN_S, ATTACK_DELAY_S, ATTACK_S = 40, 10, 20
 STOP_WAIT_S = 5
+TRACEE_START_S = 60  # give up if Tracee writes no event in this long
 PR_SET_PDEATHSIG = 1
 REPO = Path(__file__).resolve().parents[1]
 # The program each launcher's deepest process must be when the batch is recorded.
@@ -196,8 +197,13 @@ def _batch(args: argparse.Namespace, i: int, run_dir: Path, user: pwd.struct_pas
         time.sleep(ATTACK_S - 5)
         for label in ("attacker:v3", "attacker:v4"):
             roots[label].send_signal(signal.SIGINT)
-        for p in roots.values():
-            p.wait()
+        for label, p in roots.items():
+            try:
+                p.wait(timeout=BENIGN_S + STOP_WAIT_S)
+            except subprocess.TimeoutExpired:  # _stop below ends it; its events are already logged
+                print(f"batch {i}: {label} still running after {BENIGN_S + STOP_WAIT_S} s; stopping it",
+                      file=sys.stderr)
+                break
     finally:
         _stop(roots.values())
     # Only a batch that passed its check and ran to the end is written, so score
@@ -208,6 +214,26 @@ def _batch(args: argparse.Namespace, i: int, run_dir: Path, user: pwd.struct_pas
         w.writerows(rows)
 
 
+def invoker_uid() -> int:
+    """The uid that ran pkexec or sudo; root when unset, empty or not a number."""
+    for key in ("PKEXEC_UID", "SUDO_UID"):
+        raw = os.environ.get(key, "").strip()
+        if raw.isdigit():
+            return int(raw)
+    return 0
+
+
+def wait_for_first_event(tracee: subprocess.Popen, log: Path, stderr: Path, deadline_s: float) -> None:
+    """Block until Tracee writes its first event; exit if it dies or stays silent."""
+    end = time.monotonic() + deadline_s
+    while not (log.exists() and log.stat().st_size):
+        if tracee.poll() is not None:
+            sys.exit(f"Tracee exited early; see {stderr}")
+        if time.monotonic() > end:
+            sys.exit(f"Tracee wrote no event within {deadline_s:g} s; see {stderr}")
+        time.sleep(min(1, deadline_s))
+
+
 def capture(args: argparse.Namespace) -> int:
     if os.geteuid() != 0:
         sys.exit(f"capture needs root; run: pkexec {sys.executable} {Path(__file__).resolve()} "
@@ -216,7 +242,7 @@ def capture(args: argparse.Namespace) -> int:
 
     for sig in (signal.SIGTERM, signal.SIGHUP):
         signal.signal(sig, _exit_on_signal)
-    user = pwd.getpwuid(int(os.environ.get("PKEXEC_UID", os.environ.get("SUDO_UID", "0"))))
+    user = pwd.getpwuid(invoker_uid())
     args.repo = str(Path(args.repo).resolve())
     run_id = time.strftime("%Y%m%d-%H%M%S")
     run_dir = Path(args.repo) / "results/g5" / run_id
@@ -236,10 +262,7 @@ def capture(args: argparse.Namespace) -> int:
             parent = os.getpid()
             tracee = subprocess.Popen(cmd, stdout=err, stderr=subprocess.STDOUT,
                                       preexec_fn=lambda: _die_with(parent))
-        while not (log.exists() and log.stat().st_size):
-            if tracee.poll() is not None:
-                sys.exit(f"Tracee exited early; see {run_dir / 'tracee.stderr'}")
-            time.sleep(1)
+        wait_for_first_event(tracee, log, run_dir / "tracee.stderr", TRACEE_START_S)
         time.sleep(15)  # let Tracee finish attaching
         for i in range(args.batches):
             if tracee.poll() is not None:

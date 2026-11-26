@@ -18,6 +18,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
@@ -93,14 +94,14 @@ def main() -> int:
     ap.add_argument("--input", help="JSONL of per-PID features; omit to read stdin")
     args = ap.parse_args()
 
-    src = open(args.input) if args.input else sys.stdin
-    for line in src:
-        line = line.strip()
-        if not line:
-            continue
-        rec = json.loads(line)
-        verdict = triage(rec)
-        print(json.dumps({"pid": rec.get("pid"), "comm": rec.get("comm"), **verdict}))
+    with open(args.input, encoding="utf-8") if args.input else contextlib.nullcontext(sys.stdin) as src:
+        for line in src:
+            line = line.strip()
+            if not line:
+                continue
+            rec = json.loads(line)
+            verdict = triage(rec)
+            print(json.dumps({"pid": rec.get("pid"), "comm": rec.get("comm"), **verdict}))
     return 0
 
 

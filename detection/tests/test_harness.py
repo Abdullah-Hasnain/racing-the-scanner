@@ -335,3 +335,31 @@ def test_java_compile_step_shares_the_workloads_name():
     # is also "java" and counts as a benign process beside the workload.
     lines = [_proc_ev(20, 10, "python"), _proc_ev(21, 20, "java"), _proc_ev(22, 20, "java")]
     assert harness.spawned_pids(lines, root=20, comms=["java"]) == [21, 22]
+
+
+@needs_posix_sudo
+def test_sigterm_in_live_mode_still_stops_tracee_and_the_workloads(tmp_path):
+    import signal
+    import subprocess
+    import sys
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stopped, grandchild = tmp_path / "stopped", tmp_path / "gc.pid"
+    _script(bin_dir / "sudo", 'while [ "${1#-}" != "$1" ]; do shift; done\n[ $# -eq 0 ] || exec "$@"\n')
+    tracee = _script(tmp_path / "tracee", f"trap 'echo INT > {stopped}; exit 0' INT\n"
+                     "while :; do sleep 0.05; done\n")
+    attacker = _script(tmp_path / "attacker", f"sleep 300 &\necho $! > {grandchild}\nwait\n")
+    env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+           "RTS_RESULTS_DIR": str(tmp_path / "res")}
+    p = subprocess.Popen([sys.executable, "-m", "detection.harness", "--live", "--attacker-comm", "attacker",
+                          "--attacker-bin", str(attacker), "--tracee-bin", str(tracee),
+                          "--seconds", "30", "--tracee-warmup", "0.3"],
+                         env=env, cwd=Path(harness.__file__).parents[1])
+    end = time.monotonic() + 10
+    while not grandchild.exists() and time.monotonic() < end:
+        time.sleep(0.05)
+    p.send_signal(signal.SIGTERM)
+    assert p.wait(timeout=15) == 128 + signal.SIGTERM
+    assert stopped.read_text().strip() == "INT", "Tracee must get SIGINT so it flushes"
+    assert _gone(int(grandchild.read_text())), "the attacker's child outlived the harness"

@@ -104,9 +104,12 @@ def _child_setup(cpu: int, nice: int = 0, fifo: bool = False):
     is also killed if the harness dies, even by SIGKILL, so no nice -20 hog or
     V2 is left spinning on the measured core."""
     harness = os.getpid()
+    prctl = ctypes.CDLL(None, use_errno=True).prctl
+    prctl.argtypes, prctl.restype = [ctypes.c_int, ctypes.c_ulong], ctypes.c_int
 
     def setup() -> None:
-        ctypes.CDLL(None, use_errno=True).prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
+        if prctl(PR_SET_PDEATHSIG, signal.SIGKILL) != 0:
+            raise OSError(ctypes.get_errno(), "prctl(PR_SET_PDEATHSIG)")
         if os.getppid() != harness:  # the harness died before prctl took effect
             os._exit(1)
         os.sched_setaffinity(0, {cpu})
@@ -237,6 +240,8 @@ def run_cell(args: argparse.Namespace, policy: str, condition: str) -> dict:
         for p in reversed(helpers):
             p.kill()
             p.wait()
+            if p.stdout:
+                p.stdout.close()
         if target is not None:
             target_out = _stop_target(target)
         _remove_cgroups()
@@ -264,6 +269,7 @@ def _write(row: dict, path: Path) -> None:
     """Append one row, as soon as its cell finishes, so an interrupted sweep
     keeps every cell it completed."""
     assert list(row) == FIELDS, list(row)
+    new_dir = not path.parent.exists()
     path.parent.mkdir(parents=True, exist_ok=True)
     new = not path.exists()
     with path.open("a", newline="") as f:
@@ -271,13 +277,23 @@ def _write(row: dict, path: Path) -> None:
         if new:
             w.writeheader()
         w.writerow(row)
-    uid = int(os.environ.get("PKEXEC_UID", os.environ.get("SUDO_UID", "-1")))
-    if uid >= 0:  # hand the results back to the user who ran pkexec
+    uid = invoker_uid()
+    if uid is not None:  # hand the results back to the user who ran pkexec
         import pwd  # POSIX only; imported here so the module still loads on Windows
 
         gid = pwd.getpwuid(uid).pw_gid
         os.chown(path, uid, gid)
-        os.chown(path.parent, uid, gid)
+        if new_dir:  # never take over a folder that was already there
+            os.chown(path.parent, uid, gid)
+
+
+def invoker_uid() -> int | None:
+    """The uid that ran pkexec or sudo, or None when unset, empty or not a number."""
+    for key in ("PKEXEC_UID", "SUDO_UID"):
+        raw = os.environ.get(key, "").strip()
+        if raw.isdigit():
+            return int(raw)
+    return None
 
 
 def _exit_on_signal(signum, frame):
@@ -303,6 +319,8 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     args.v1_bin = args.v1_bin or str(Path(args.repo) / "memory/bin/v1")
     args.v2_bin = args.v2_bin or str(Path(args.repo) / "memory/bin/v2")
+    if args.cpu not in os.sched_getaffinity(0):
+        sys.exit(f"CPU {args.cpu} is not available here; pick one of {sorted(os.sched_getaffinity(0))}")
     if os.geteuid() != 0:
         sys.exit(f"needs root; run: pkexec {sys.executable} {Path(__file__).resolve()} "
                  f"--repo {Path(args.repo).resolve()}")

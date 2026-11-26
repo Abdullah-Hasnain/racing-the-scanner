@@ -37,7 +37,9 @@ runtime.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import ctypes
+import functools
 import mmap
 import os
 import shutil
@@ -118,20 +120,19 @@ def run_sqlite(seconds: float) -> int:
     end = time.time() + seconds
     rounds = 0
     with tempfile.TemporaryDirectory() as tmp:
-        db = sqlite3.connect(os.path.join(tmp, "churn.db"))
-        db.execute("PRAGMA mmap_size=67108864")
-        db.execute("CREATE TABLE t(id INTEGER PRIMARY KEY, pad BLOB)")
-        while time.time() < end:
-            with db:
-                db.executemany(
-                    "INSERT INTO t(pad) VALUES (?)", ((os.urandom(2048),) for _ in range(5000))
-                )
-                # Alternate the parity so last round's survivors go too and the
-                # DB stays near one round's rows, well inside mmap_size.
-                db.execute("DELETE FROM t WHERE id % 2 = ?", (rounds % 2,))
-            db.execute("VACUUM")
-            rounds += 1
-        db.close()
+        with contextlib.closing(sqlite3.connect(os.path.join(tmp, "churn.db"))) as db:
+            db.execute("PRAGMA mmap_size=67108864")
+            db.execute("CREATE TABLE t(id INTEGER PRIMARY KEY, pad BLOB)")
+            while time.time() < end:
+                with db:
+                    db.executemany(
+                        "INSERT INTO t(pad) VALUES (?)", ((os.urandom(2048),) for _ in range(5000))
+                    )
+                    # Alternate the parity so last round's survivors go too and the
+                    # DB stays near one round's rows, well inside mmap_size.
+                    db.execute("DELETE FROM t WHERE id % 2 = ?", (rounds % 2,))
+                db.execute("VACUUM")
+                rounds += 1
     print(f"[benign-sqlite] {rounds} rounds")
     return 0
 
@@ -145,9 +146,21 @@ WORKLOADS = {
 }
 
 
+@functools.cache
+def _libc_mprotect():
+    fn = ctypes.CDLL("libc.so.6", use_errno=True).mprotect  # Linux only, so looked up on first use
+    fn.argtypes, fn.restype = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int], ctypes.c_int
+    return fn
+
+
+def mprotect(addr: int, length: int, prot: int) -> None:
+    if _libc_mprotect()(addr, length, prot) == -1:
+        err = ctypes.get_errno()
+        raise OSError(err, f"mprotect: {os.strerror(err)}")
+
+
 def run_stub(seconds: float) -> None:
     """Exercise mprotect RW<->RX flips like a JIT, with no external runtime."""
-    libc = ctypes.CDLL("libc.so.6", use_errno=True)
     size = mmap.PAGESIZE * 16
     buf = mmap.mmap(-1, size, prot=mmap.PROT_READ | mmap.PROT_WRITE)
     addr = ctypes.addressof(ctypes.c_char.from_buffer(buf))
@@ -157,8 +170,8 @@ def run_stub(seconds: float) -> None:
     print("[benign-stub] flipping a page RW<->RX like a JIT.")
     end = time.time() + seconds
     while time.time() < end:
-        libc.mprotect(ctypes.c_void_p(page), mmap.PAGESIZE, PROT_RX)
-        libc.mprotect(ctypes.c_void_p(page), mmap.PAGESIZE, PROT_RW)
+        mprotect(page, mmap.PAGESIZE, PROT_RX)
+        mprotect(page, mmap.PAGESIZE, PROT_RW)
         time.sleep(0.001)
     buf.close()
 

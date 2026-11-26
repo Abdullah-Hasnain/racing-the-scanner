@@ -12,11 +12,12 @@ Every stage works offline on a saved log, so you can build the whole pipeline
 before Tracee is even installed.
 
 ```bash
+# from the repo root, with the venv active
 # 1. aggregate a saved Tracee log into per-PID feature records
-python aggregator.py --input sample_tracee.json > features.jsonl
+python -m detection.aggregator --input events.json > features.jsonl
 
 # 2. triage each record with the local LLM (falls back to a heuristic if no LLM)
-python triage_llm.py --input features.jsonl
+python -m detection.triage_llm --input features.jsonl
 ```
 
 Point the triage at your local model with `RTS_LLM_URL` and `RTS_LLM_MODEL`
@@ -223,8 +224,8 @@ jemalloc/SQLite) that trip false alarms, with a dependency-free `--stub` for
 pipeline testing.
 
 ```bash
-python3 detection/benign/run_benign.py --workload {node,go-gc,java-gc,malloc,sqlite} [--seconds 30]
-python3 detection/benign/run_benign.py --stub
+python -m detection.benign.run_benign --workload {node,go-gc,java-gc,malloc,sqlite} [--seconds 30]
+python -m detection.benign.run_benign --stub
 ```
 
 Compiled workloads are built first, so no compiler runs in the measured
@@ -272,7 +273,7 @@ like Ctrl-C, and Tracee and the workloads die with the capture.
 ```bash
 make -C memory
 pkexec "$PWD/.venv/bin/python" "$PWD/detection/g5_capture.py" capture --repo "$PWD"
-.venv/bin/python detection/g5_capture.py score results/g5/<run_id>
+python -m detection.g5_capture score results/g5/<run_id>
 ```
 
 Needs node, go and java on pkexec's PATH, which is the system one, not your

@@ -236,3 +236,34 @@ def test_v1_rows_have_no_v2_fault_count(cell):
         condition="none",
     )
     assert row["attacker"] == "v1" and row["v2_faults"] is None
+
+
+def _row():
+    return dict.fromkeys(coupled_live.FIELDS, 0)
+
+
+@pytest.mark.parametrize("raw", ["", "abc", " "])
+def test_write_ignores_an_empty_or_bad_invoker_uid(tmp_path, monkeypatch, raw):
+    monkeypatch.setenv("PKEXEC_UID", raw)
+    monkeypatch.delenv("SUDO_UID", raising=False)
+    monkeypatch.setattr(os, "chown", lambda *a: pytest.fail("chown without a valid uid"))
+    coupled_live._write(_row(), tmp_path / "c.csv")
+    assert (tmp_path / "c.csv").exists()
+
+
+def test_write_chowns_the_results_dir_only_when_it_created_it(tmp_path, monkeypatch):
+    monkeypatch.setenv("PKEXEC_UID", str(os.getuid()))
+    owned: list[str] = []
+    monkeypatch.setattr(os, "chown", lambda p, uid, gid: owned.append(Path(p).name))
+    coupled_live._write(_row(), tmp_path / "new" / "c.csv")
+    assert owned == ["c.csv", "new"]
+    owned.clear()
+    coupled_live._write(_row(), tmp_path / "c.csv")  # tmp_path existed already
+    assert owned == ["c.csv"]
+
+
+def test_a_cpu_outside_the_affinity_mask_is_refused(monkeypatch):
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    bad = max(os.sched_getaffinity(0)) + 1
+    with pytest.raises(SystemExit, match=f"CPU {bad}"):
+        coupled_live.main(["--cpu", str(bad), "--v1-bin", sys.executable, "--v2-bin", sys.executable])
