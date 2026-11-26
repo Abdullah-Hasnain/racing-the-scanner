@@ -1,0 +1,4 @@
+# Shell scripts and the kernel patch must keep LF endings, even on a Windows
+# checkout with core.autocrlf=true; with CRLF, WSL2 fails with "env: 'bash\r'".
+*.sh text eol=lf
+*.patch text eol=lf

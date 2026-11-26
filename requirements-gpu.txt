@@ -1,16 +1,11 @@
 # GPU-only extras. Install ONLY on the NVIDIA machines (Ibad's RTX 5070 Ti,
-# the GTX 1660 Super PC) for the neural policies (autoencoder, LSTM, 1D-CNN)
-# and any GPU-accelerated triage experiments.
+# the GTX 1660 Super PC) for the autoencoder policy
+# (sim/policies/autoencoder.py).
 #
 # Install core first, then:  pip install -r requirements-gpu.txt
 # Pick the torch build that matches your CUDA version (see docs/setup/gpu-cuda.md).
 #
-# The laptops and the MacBook do NOT need this file. Every neural policy has a
-# CPU fallback and is optional (Group C is a stretch), so the project is fully
-# developable without any of these.
+# The laptops and the MacBook do NOT need this file. The autoencoder runs on CPU
+# too and is optional, so the project is fully developable without it.
 
 torch>=2.2
-# xgboost and lightgbm are the two gradient-boosting policies (S-GBT);
-# they run fine on CPU but train faster where resources allow.
-xgboost>=2.0
-lightgbm>=4.3

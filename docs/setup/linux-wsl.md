@@ -15,7 +15,6 @@ sudo apt install -y build-essential clang make python3 python3-venv python3-pip 
 cd racing-the-scanner
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env
 make test
 ```
 
@@ -41,10 +40,8 @@ python scanner/scanner.py --pid <PID> --interval 0.1 --duration 20
 
 ## Aqua Tracee (Ibad)
 
-Install the Tracee binary (see the Aqua docs) and run it against a target:
-```bash
-sudo tracee --policy ../detection/tracee/memory-hiding.yaml --output json
-```
+Tracee must be v0.23.2 and run from the repo root as root. The install, checksum
+and exact command are in [`detection/README.md`, "Running Tracee"](../../detection/README.md#running-tracee).
 The aggregator and triage work offline on a saved log, so you can start before
 Tracee is set up.
 

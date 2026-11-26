@@ -9,7 +9,7 @@ help:
 	@echo "  make lint     Run ruff (same check CI runs)"
 	@echo "  make test     Run the unit tests (sim, detection, and memory)"
 	@echo "  make sim      Run one quick simulation (baseline policy, smoke test)"
-	@echo "  make sweep    Run the full policy sweep (all schedulers vs the attack)"
+	@echo "  make sweep    Run the full policy sweep and the G3 attack conditions"
 	@echo "  make graphs   Build G1-G6 figures from the latest results/"
 	@echo "  make memory   Build the C memory payloads + scanner (Linux only)"
 	@echo "  make clean    Remove build artifacts (keeps results/)"
@@ -27,10 +27,11 @@ sim:
 	python -m sim.run_experiment --policies baseline --runs 3 --smoke
 
 sweep:
-	python -m sim.run_experiment --policies all
+	python -m sim.run_experiment --policies all --runs 20
+	python -m sim.run_experiment --policies all --runs 20 --g3
 
 graphs:
-	python analysis/make_graphs.py
+	python -m analysis.make_graphs
 
 memory:
 	$(MAKE) -C memory
