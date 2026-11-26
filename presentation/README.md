@@ -29,7 +29,7 @@ hash was added. After editing `styles.css`, `script.js` or the data, run
 
 | Key | Action |
 |---|---|
-| Space, Right or Down arrow | next (this steps through every fragment and slide, the Results stack included) |
+| Space, Right or Down arrow | next (steps through every fragment, then every slide) |
 | Left or Up arrow | previous |
 | `S` | speaker view: notes, timer, the current and next slide (allow the popup) |
 | `F` | full screen (`Esc` leaves) |
@@ -73,7 +73,7 @@ new run:
 ```
 
 The numbers in slide text and notes (titles, takeaways, the `sched_ext` table) match
-the report (`report/main.tex`, PR #66) and `docs/`. Each slide's footer names its source.
+the report (`report/main.tex`) and `docs/`. Each slide's footer names its source.
 
 ## The script and timing
 
@@ -82,7 +82,10 @@ speaker block), then the spoken text with `[click]` marks where a fragment advan
 the transition to the next slide. `python3 tools/build_script.py` collects them into
 `SCRIPT.md`:
 - **Planned:** 14:20.
-- **Estimated from the words written:** 14:08 at 140 words per minute.
+- **Estimated from the words written:** 14:19 at 140 words per minute.
+
+The table at the top of `SCRIPT.md` is the source for both; rerun the tool after
+editing the notes.
 
 Q&A and the appendix are extra. The backup answers for likely questions sit in the
 conclusions slide's notes.

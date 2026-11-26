@@ -221,7 +221,7 @@
 
     // G4: p95 per policy under coupled mimicry vs the 8-tick window
     g4() {
-      const order = [...RES.sort(by("p95_latency")), ...ML.sort(by("p95_latency")), "baseline"];
+      const order = [...[...RES].sort(by("p95_latency")), ...[...ML].sort(by("p95_latency")), "baseline"];
       return {
         type: "bar",
         data: {
@@ -279,7 +279,8 @@
 
     // G6a: policy compute per 600-tick run (log scale)
     g6a() {
-      const order = [...RES, ...ML].sort(by("overhead_ms"));
+      // sorted within each group, so the group brackets below always cover exactly one group
+      const order = [...[...RES].sort(by("overhead_ms")), ...[...ML].sort(by("overhead_ms"))];
       const ovRes = RES.map((p) => P[p].overhead_ms), ovML = ML.map((p) => P[p].overhead_ms);
       return {
         type: "bar",
@@ -394,7 +395,7 @@
     controlsTutorial: false,
     progress: true,
     slideNumber: "c/t",
-    navigationMode: "linear", // arrows and space walk every slide, the Results stack included
+    navigationMode: "linear", // arrows and space walk every fragment, then every slide
     transition: "fade",
     transitionSpeed: "default",
     backgroundTransition: "fade",

@@ -164,7 +164,7 @@ Three takeaways. [click] One: detection loses to mimicry. All fourteen machine-l
 
 *0:00 · Appendix, for questions about related work.*
 
-## 15. Appendix B · How we tested: A controlled comparison: one attack, four conditions, three testbeds
+## 15. Appendix B · How we tested: A controlled comparison: one attack, four conditions, four testbeds
 
 *0:00 · Appendix, for questions about method.*
 

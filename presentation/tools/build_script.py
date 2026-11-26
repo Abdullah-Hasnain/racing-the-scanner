@@ -64,7 +64,8 @@ class Notes(HTMLParser):
 
 
 def mmss(sec):
-    return f"{int(sec // 60)}:{int(round(sec % 60)):02d}"
+    s = int(round(sec))
+    return f"{s // 60}:{s % 60:02d}"
 
 
 def main():
@@ -74,7 +75,7 @@ def main():
 
     parser = Notes()
     parser.feed((ROOT / "index.html").read_text(encoding="utf-8"))
-    slides = [s for s in parser.slides if s["paras"]]  # leaf slides with notes (the Results stack wrapper has none)
+    slides = [s for s in parser.slides if s["paras"]]  # slides that carry speaker notes
 
     rows, body, planned_total, est_total = [], [], 0.0, 0.0
     for n, s in enumerate(slides, 1):
