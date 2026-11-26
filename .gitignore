@@ -26,6 +26,8 @@ data/
 models/*.pt
 figures/*.png
 figures/*.pdf
+# third-party format reference: keep a local copy, do not redistribute
+report/reference/*.pdf
 
 # Local LLM weights (large, never commit)
 *.gguf

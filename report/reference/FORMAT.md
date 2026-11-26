@@ -1,7 +1,9 @@
 # Report format reference
 
-`sample-wajid.pdf` is the instructor's own sample (Dr. Bilal Wajid, "The Temporal
-Cost of Cognition: Evaluating Agentic LLMs and Cyber Resilience in Local EDR").
+The instructor's own sample (Dr. Bilal Wajid, "The Temporal Cost of Cognition:
+Evaluating Agentic LLMs and Cyber Resilience in Local EDR") is the format
+reference. It is a third-party paper, so it is not committed: keep a local copy
+at `report/reference/sample-wajid.pdf`, which `.gitignore` excludes.
 It is a FORMAT and RIGOR reference only. Do not copy its wording, its experiments,
 or its numbers. Our report is about our own, different system (a live RAM scanner,
 a scheduler simulation across ~15 ML policies and reservations, and real-kernel

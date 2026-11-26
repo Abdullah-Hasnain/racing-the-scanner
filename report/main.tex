@@ -84,7 +84,7 @@ piece does and does not show.
 
 This framing is itself a correction: an earlier version presented our invariant
 as a unique mechanism, until the standard Linux reservations, added as
-baselines, matched it exactly (issues \#28/\#29).
+baselines, matched it exactly.
 
 \section{Methods}
 
@@ -115,11 +115,12 @@ telemetry only here: the XOR-masked marker measures about 3.25~bits/byte, below
 the threshold, and the timing runs disable it because it makes each scan about
 40$\times$ slower.
 
-G1 and G2 were measured on bare metal (Intel Core i7-14700F, Linux
-7.0.0-44, payload and scanner pinned to one P-core). G1 scans V1--V4 at five
+The catch-rate (Fig.~\ref{fig:g1}) and cost (Fig.~\ref{fig:g2}) experiments
+were measured on bare metal (Intel Core i7-14700F, Linux 7.0.0-44, payload and
+scanner pinned to one P-core). The catch-rate sweep scans V1--V4 at five
 intervals (0.037--5.037~s) and V2/V3 at dwell times of 1, 5, 10 and 25~ms with
 one page touched per 100~ms, 3 reps of 10~s per cell (20~s at the longest
-interval). G2 runs each payload in a tight loop for 5~s with no scanner to
+interval). The cost experiment runs each payload in a tight loop for 5~s with no scanner to
 measure its slowdown against V1, then for 5~s at one touch per 100~ms against a
 scan every 37~ms to measure evasion.
 
@@ -190,29 +191,29 @@ for 40~s, and V2 (a different timing each batch), V3 and V4 for 20~s.
 
 \section{Results}
 
-\subsection{Hiding works only while hidden (G1, G2)}
+\subsection{Hiding works only while hidden}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\columnwidth]{G1_catch_rate.png}
-\caption{G1: per-scan catch rate against scan interval, all scans of a cell
+\caption{Per-scan catch rate against scan interval, all scans of a cell
 pooled, 95\% Wilson intervals.}
 \label{fig:g1}
 \end{figure}
 Fig.~\ref{fig:g1}: the scanner catches V1 on every scan and V4 on none, at every
 interval. For V2 the per-scan catch rate is the fraction of time a page is
 exposed: 0.007, 0.055, 0.105 and 0.252 at dwell times of 1, 5, 10 and 25~ms
-against 0.01, 0.05, 0.10 and 0.25 expected (about 805 pooled scans each, at the
+against 0.01, 0.05, 0.10 and 0.25 expected (805--807 pooled scans each, at the
 0.037~s interval). V3 stays exposed a few milliseconds longer than its dwell: at
 1~ms it is caught on 0.045 of scans (95\% interval 0.032--0.062). The rate does
 not depend on the scan interval; a longer interval only delays the first catch,
 and the wide bars at long intervals reflect 12 to 21 scans per cell, not a
 trend. Each interval is 37~ms past a multiple of 100~ms; multiples of 50~ms
-phase-lock to the payload's cycle (\#63).
+phase-lock to the payload's cycle.
 
 \begin{figure}[t]
 \centering
 \includegraphics[width=\columnwidth]{G2_pareto.png}
-\caption{G2: the attacker's slowdown against the share of scans it evades
+\caption{The attacker's slowdown against the share of scans it evades
 (left), and the page faults it pays (right).}
 \label{fig:g2}
 \end{figure}
@@ -224,11 +225,11 @@ whole study: V1--V3 are caught only during exposure, so scheduling decides
 whether they are caught; V4 defeats the scanner regardless of scheduling, and
 only a syscall-level view can see it (Section~\ref{sec:det}).
 
-\subsection{Detection-based scheduling loses to mimicry (G4)}
+\subsection{Detection-based scheduling loses to mimicry}
 \begin{figure*}[t]
 \centering
 \includegraphics[width=0.66\textwidth]{G4_policy_comparison.png}
-\caption{G4: monitor p95 scan latency (left) and miss rate (right) for every
+\caption{Monitor p95 scan latency (left) and miss rate (right) for every
 policy under the coupled mimicry attack.}
 \label{fig:g4}
 \end{figure*}
@@ -249,7 +250,7 @@ Logistic regression, MLP and naive Bayes rank it slightly above chance
 it on any tick of any run (0\% demotion). So 11 of the 14 score it at or below
 chance, and the family median is 0.285.
 
-\subsection{Every reservation holds; the cost frontier (G3)}
+\subsection{Every reservation holds; the cost frontier}
 \begin{table}[t]
 \caption{Reservations under the coupled attack (simulation, 20-run medians;
 naive and mimicry runs are identical)}
@@ -281,7 +282,7 @@ contains the hog (64\% left to the benign apps), but it depends on the cap: at
 \begin{figure*}[t]
 \centering
 \includegraphics[width=0.94\textwidth]{G3_attack_conditions.png}
-\caption{G3: scanner slowdown against no attack, per attack condition. Solid:
+\caption{Scanner slowdown against no attack, per attack condition. Solid:
 simulation (p95 latency ratio, mimicry attacker). Hatched: real kernel (scan
 period ratio, nice $-20$ attacker on one core).}
 \label{fig:g3}
@@ -292,7 +293,7 @@ slows the scanner, and every reservation but \texttt{cpu.max} (up to
 scanner 7.0$\times$ under EEVDF, and the ML policies do little better under
 mimicry (4.9$\times$ for Isolation Forest, 6.0$\times$ for random forest).
 
-\subsection{The reservation half on a real kernel (G3, hatched)}
+\subsection{The reservation half on a real kernel}
 On the bare-metal kernel, the scanner runs 26.75--26.95 scans/s in every
 reservation cell and with no attack. Under stock EEVDF the nice~$-20$ hogs cut it
 to 2.95~scans/s under starvation and 4.7 under the coupled attack (medians):
@@ -325,11 +326,11 @@ a real kernel within 1--3 points of the simulation's proportional-share model,
 so the weight mechanism the simulation assumes, and through which a reservation
 for the scanner could be built, holds in practice.
 
-\subsection{Detection with Tracee (G5)}\label{sec:det}
+\subsection{Detection with Tracee}\label{sec:det}
 \begin{figure}[t]
 \centering
 \includegraphics[width=0.85\columnwidth]{G5_detection.png}
-\caption{G5: catch rate against false-alarm rate per detector, pooled over five
+\caption{Catch rate against false-alarm rate per detector, pooled over five
 capture batches (15 hiding processes, 30 benign).}
 \label{fig:g5}
 \end{figure}
@@ -340,14 +341,15 @@ the RAM scanner can never see: the \texttt{memfd\_secret} call itself gives it
 away. Raw \texttt{PROT\_NONE} flips would not have worked: the detection runs
 report Node.js making 158 and the JVM 1,413 of them without relocking any region,
 while V2 made 200 round trips. AI triage of the same features catches 10 of 15, missing
-one hiding process in every batch, with no false alarms. A fresh capture with
+one hiding process in every batch (the capture does not record which), with no
+false alarms. A fresh capture with
 the committed script reproduces every count, batch by batch.
 
-\subsection{What each defense costs (G6)}
+\subsection{What each defense costs}
 \begin{figure*}[t]
 \centering
 \includegraphics[width=0.66\textwidth]{G6_overhead.png}
-\caption{G6: (a) single-core policy compute time per 600-tick run, deciding plus
+\caption{(a) Single-core policy compute time per 600-tick run, deciding plus
 allocating, log scale; (b) LLM triage time per process.}
 \label{fig:g6}
 \end{figure*}
@@ -385,7 +387,7 @@ optional PyTorch.
 cause is not established. Starved EEVDF scans also catch V2 more often (0.18 per
 scan against 0.10), unexplained, so our catch loss may be a lower bound; V3's
 extra exposure is unexplained too.
-\item G5 is small (15 hiding and 30 benign processes, one machine, five
+\item The detection study is small (15 hiding and 30 benign processes, one machine, five
 batches), and a hider that relocks a different address range than it unlocked
 would evade the relock rule.
 \item A couple of supporting observations, the nice-0 control and the Node.js
@@ -396,9 +398,8 @@ figure and table rests on committed data.
 \subsection{Corrections we made along the way}
 Three claims changed under our own checks: the invariant as a unique protector
 became ``every reservation protects the scanner, and the invariant is one of
-them'' (\#28/\#29); the reservations' ``zero'' overhead became a measured
-2--8~ms (\#55); and the first G1 sweep's phase-locked intervals were replaced
-(\#63). Each correction made the result smaller and more defensible.
+them''; the reservations' ``zero'' overhead became a measured 2--8~ms; and
+the first catch-rate sweep's phase-locked intervals were replaced. Each correction made the result smaller and more defensible.
 
 \section{Conclusion and Future Work}
 Against an attacker that disguises its timing, scheduling that detects the

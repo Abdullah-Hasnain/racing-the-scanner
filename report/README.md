@@ -34,3 +34,15 @@ commit 5b10251 (`main` at 1c00012 plus `report/reference/`), on a fresh
 tracked-files-only copy: `setup.sh` then the unmodified `run_demo.sh`, exit 0.
 The optional autoencoder policy is skipped because `setup.sh` does not install
 PyTorch, so the figures show 14 ML policies.
+
+## Figure numbers
+
+The paper numbers its figures in reading order, which differs from the repo's
+graph names: Fig. 1 is G1, Fig. 2 is G2, Fig. 3 is G4, Fig. 4 is G3, Fig. 5 is G5
+and Fig. 6 is G6.
+
+## Committed binaries
+
+`report/figures/*.png` and `report/main.pdf` are committed on purpose, an
+exception to the "do not commit figures" rule in `CONTRIBUTING.md`, so the
+report reads and rebuilds without running `run_demo.sh` or LaTeX first.
