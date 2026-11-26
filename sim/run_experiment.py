@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -53,7 +54,8 @@ def _iqr(row: pd.Series, metric: str, spec: str) -> str:
     return f"{row[metric]:{spec}} [{row[f'{metric}_q25']:{spec}}, {row[f'{metric}_q75']:{spec}}]"
 
 
-def _sweep(names: list[str], cfg: SimConfig, runs: int) -> list[dict]:
+def _sweep(names: list[str], cfg: SimConfig, runs: int, failed: list[str]) -> list[dict]:
+    """Run each policy; a policy that raises is printed and added to `failed`."""
     per_run: list[dict] = []
     for name in names:
         try:
@@ -64,17 +66,28 @@ def _sweep(names: list[str], cfg: SimConfig, runs: int) -> list[dict]:
                   f"miss={_iqr(r, 'miss_rate', '.2f'):<19} "
                   f"auc={_iqr(r, 'roc_auc', '.2f'):<19} overhead={r.overhead_ms:6.2f}ms")
         except Exception as exc:  # one bad policy must not kill the sweep
-            print(f"  {name:<14} FAILED: {exc}")
+            print(f"  {name:<14} FAILED: {exc}", file=sys.stderr)
+            failed.append(f"{name} ({cfg.condition}, {_mode(cfg.mimicry)})")
     return per_run
 
 
-def _g3(names: list[str], cfg: SimConfig, runs: int, out: Path) -> int:
+def _failed(failed: list[str], keep_going: bool) -> int:
+    """Exit status for the sweep: 1 when a policy failed, unless --continue-on-error."""
+    if not failed:
+        return 0
+    print(f"\n{len(failed)} policy runs failed and are missing from the CSVs: {', '.join(failed)}",
+          file=sys.stderr)
+    return 0 if keep_going else 1
+
+
+def _g3(names: list[str], cfg: SimConfig, runs: int, out: Path, keep_going: bool) -> int:
     """Every attack condition in both attacker modes, for G3."""
     per_run: list[dict] = []
+    failed: list[str] = []
     for condition in CONDITIONS:
         for mimicry in (False, True):
             print(f"\n== {condition}, {_mode(mimicry)} ==")
-            per_run.extend(_sweep(names, replace(cfg, condition=condition, mimicry=mimicry), runs))
+            per_run.extend(_sweep(names, replace(cfg, condition=condition, mimicry=mimicry), runs, failed))
     if not per_run:
         print("no results produced")
         return 1
@@ -93,7 +106,7 @@ def _g3(names: list[str], cfg: SimConfig, runs: int, out: Path) -> int:
         with pd.option_context("display.width", 160, "display.max_rows", None):
             print(table.round(2).to_string(na_rep="n/a"))
     print(f"\nwrote {out}/aggregate_g3.csv and per_run_g3.csv")
-    return 0
+    return _failed(failed, keep_going)
 
 
 def main() -> int:
@@ -109,6 +122,8 @@ def main() -> int:
     ap.add_argument("--g3", action="store_true",
                     help="sweep every condition in both modes (ignores --condition/--no-mimicry)")
     ap.add_argument("--smoke", action="store_true", help="tiny fast run to verify the setup")
+    ap.add_argument("--continue-on-error", action="store_true",
+                    help="exit 0 even if a policy fails (the CSVs then lack its rows)")
     ap.add_argument("--out", default=os.environ.get("RTS_RESULTS_DIR", "./results"))
     args = ap.parse_args()
 
@@ -128,9 +143,10 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
 
     if args.g3:
-        return _g3(names, cfg, args.runs, out)
+        return _g3(names, cfg, args.runs, out, args.continue_on_error)
 
-    per_run = _sweep(names, cfg, args.runs)
+    failed: list[str] = []
+    per_run = _sweep(names, cfg, args.runs, failed)
     if not per_run:
         print("no results produced")
         return 1
@@ -160,7 +176,7 @@ def main() -> int:
     print(f"\nwrote {out}/aggregate_{tag}.csv and per_run_{tag}.csv")
     print(f"policies available: {len(all_policies())} (baseline + {len(augmented_policies())} "
           f"augmented + {len(reservation_names())} reservation + invariant)")
-    return 0
+    return _failed(failed, args.continue_on_error)
 
 
 if __name__ == "__main__":
