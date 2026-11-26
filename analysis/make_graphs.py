@@ -13,6 +13,7 @@ Usage (see analysis/README.md):
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import NamedTuple
 
@@ -23,10 +24,16 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.patches import Patch  # noqa: E402
 
-RESULTS = Path(os.environ.get("RTS_RESULTS_DIR", "./results"))
-FIGURES = Path(os.environ.get("RTS_FIGURES_DIR", "./figures"))
+
+def _default_dir(env: str, name: str) -> Path:
+    """$env if set, else <repo>/name, so the figures land in the same place from any cwd."""
+    return Path(os.environ.get(env) or Path(__file__).resolve().parent.parent / name)
+
+
+RESULTS = _default_dir("RTS_RESULTS_DIR", "results")
+FIGURES = _default_dir("RTS_FIGURES_DIR", "figures")
 # Committed copies of the CSVs that need root or a real kernel to produce (#44).
-CAPTURED = Path(os.environ.get("RTS_CAPTURED_DIR", "./captured"))
+CAPTURED = _default_dir("RTS_CAPTURED_DIR", "captured")
 
 
 FALLBACK_BLUE = "#47a"
@@ -67,6 +74,22 @@ def _src(name: str) -> Path | None:
         if (d / name).exists():
             return d / name
     return None
+
+
+def _drop_zero(df: pd.DataFrame, cols: list[str], fig: str) -> pd.DataFrame:
+    """Drop rows whose denominator is 0, saying so, rather than plot a silent NaN."""
+    bad = (df[cols] <= 0).any(axis=1)
+    if bad.any():
+        print(f"[{fig}] dropped {int(bad.sum())} rows with {' or '.join(cols)} = 0", file=sys.stderr)
+    return df[~bad]
+
+
+def _finite(t: pd.DataFrame, fig: str) -> pd.DataFrame:
+    """Drop the inf/NaN ratios a zero baseline gives, saying so."""
+    bad = ~t["slowdown"].abs().lt(float("inf"))
+    if bad.any():
+        print(f"[{fig}] dropped {int(bad.sum())} slowdowns with a zero or missing baseline", file=sys.stderr)
+    return t[~bad]
 
 
 def _save(fig, name: str) -> Path:
@@ -125,13 +148,14 @@ def g3_slowdown(sim: pd.DataFrame | None, live: pd.DataFrame | None) -> pd.DataF
     if sim is not None:
         s = sim[(sim["mimicry"] == True) & sim["policy"].isin(G3_POLICIES)]  # noqa: E712
         s = s.set_index(["policy", "condition"])["p95_latency"].unstack()
-        parts.append(s.div(s["none"], axis=0).stack().rename("slowdown").reset_index().assign(source="sim"))
+        parts.append(_finite(s.div(s["none"], axis=0).stack().rename("slowdown").reset_index(), "G3")
+                     .assign(source="sim"))
     if live is not None:
         if "attacker_nice" in live:
             live = live[live["attacker_nice"] == live["attacker_nice"].min()]
         r = live.groupby(["policy", "condition"])["scans_per_s"].median().unstack()
         r = (1 / r).mul(r["none"], axis=0).rename(index={v: k for k, v in SIM_TO_LIVE.items()})
-        parts.append(r.stack().rename("slowdown").reset_index().assign(source="real"))
+        parts.append(_finite(r.stack().rename("slowdown").reset_index(), "G3").assign(source="real"))
     if not parts:
         return pd.DataFrame(columns=["policy", "condition", "slowdown", "source"])
     return pd.concat(parts, ignore_index=True)
@@ -144,6 +168,9 @@ def g3_attack_conditions() -> bool:
         print("[G3] skip: run `python -m sim.run_experiment --policies all --g3` "
               "(and detection/coupled_live.py as root for the real-kernel bars)")
         return False
+    if sim_src is None:
+        print("[G3] warning: aggregate_g3.csv missing, drawing the real-kernel bars only; "
+              "run `python -m sim.run_experiment --policies all --runs 20 --g3`", file=sys.stderr)
     sim = pd.read_csv(sim_src) if sim_src else None
     t = g3_slowdown(sim, pd.read_csv(live_src) if live_src else None)
     groups = dict(zip(sim["policy"], sim["group"], strict=False)) if sim is not None else {}
@@ -195,6 +222,7 @@ def g1_summary(df: pd.DataFrame) -> pd.DataFrame:
     only a handful of scans, so a median of per-run rates jumps between 0, 1/7 and 1/4."""
     df = df.assign(dwell_ms=df["dwell_ms"].fillna(0))  # V1/V4 have no dwell
     out = df.groupby(["variant", "dwell_ms", "interval_s"])[["catches", "scans"]].sum().reset_index()
+    out = _drop_zero(out, ["scans"], "G1")
     out["catch_rate"] = out["catches"] / out["scans"]
     bounds = [wilson_interval(c, n) for c, n in zip(out["catches"], out["scans"], strict=True)]
     out["lo"], out["hi"] = [b[0] for b in bounds], [b[1] for b in bounds]
@@ -232,7 +260,7 @@ def g1_catch_rate() -> bool:
              + ", ".join(f"{i:g} s: {int(k)}" for i, k in n.items())
              + ". Fewer scans at long intervals give wider bars, not a trend.", fontsize=7)
     fig.suptitle("G1: how often the RAM scanner catches the hidden marker", fontsize=11)
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0.04, 1, 0.94))  # room for the footnote and the title
     out = _save(fig, "G1_catch_rate.png")
     print(f"[G1] wrote {out}")
     return True
@@ -294,7 +322,7 @@ def g2_pareto() -> bool:
     ax2.set_yscale("symlog")
     ax2.set_ylim(0, max(1.0, s["faults_per_s"].max()) * 4)  # headroom above the tallest bar
     fig.suptitle("G2: what hiding costs the attacker", fontsize=11)
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0, 1, 0.94))
     out = _save(fig, "G2_pareto.png")
     print(f"[G2] wrote {out}")
     return True
@@ -326,6 +354,7 @@ def pool_detection(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
     excluded = int((df["style"] == "").sum())
     df = df[df["style"] != ""]
     g = df.groupby(["style", "label"], as_index=False)[["caught", "n_attackers", "false_alarms", "n_benign"]].sum()
+    g = _drop_zero(g, ["n_attackers", "n_benign"], "G5")
     g["catch_rate"] = g["caught"] / g["n_attackers"]
     g["fp_rate"] = g["false_alarms"] / g["n_benign"]
     return g, excluded
