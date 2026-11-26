@@ -89,6 +89,7 @@ pkexec sh -c 'cd /path/to/repo && .venv/bin/python -m memory.sweep_g1'
 
 Key flags:
 - `--intervals <sec ...>`, `--dwell-ms <ms ...>`, `--reps <int>`: override the default grid (`0.037 0.137 0.537 1.537 5.037` s, `1 5 10 25` ms, `3` reps).
+- `--seed <int>` (default `1`): with `--pattern random`, rep N runs its payload with `--seed <seed + N>`, so reps don't repeat one page order.
 - `--cpu <int>` / `--no-pin`: pin both payload and scanner to one core (default `2` on Linux via `sched_setaffinity`, matching G3).
 - `--resume`: skip `(variant, dwell_ms, interval_s, pattern, duration_s, rep)` cells already present in the output CSV.
 - `--with-entropy`: enable the per-page Shannon-entropy pass (disabled by default via `--no-entropy`, leaving `max_entropy` blank).
@@ -111,6 +112,7 @@ Each cell runs two pinned phases (default CPU `2`, no competing hogs):
 
 Key flags:
 - `--dwell-ms <ms ...>`, `--scan-interval <sec>`, `--touch-interval-ms <ms>`, `--pattern <seq|random|stride>`, `--reps <int>`, `--duration <sec>`: override the default `#38` grid (`1 5 10 25` ms, `0.037` s scan, `100` ms touch, `seq`, `3` reps, `5.0` s).
+- `--seed <int>` (default `1`): with `--pattern random`, rep N runs its payload with `--seed <seed + N>`.
 - `--cpu <int>` / `--no-pin`: pin payload and scanner to one core (default `2` on Linux, `-1` disables).
 - `--resume`: skip `(variant, dwell_ms, pattern, duration_s, rep)` cells already present in the CSV and reuse recorded `v1` baselines.
 - `--with-entropy` / `--strict`: enable scanner entropy pass (`max_entropy` telemetry only) or abort instead of skipping `v4` if `memfd_secret` is unavailable.

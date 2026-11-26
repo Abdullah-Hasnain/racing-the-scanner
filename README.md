@@ -54,23 +54,23 @@ python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
-# 3. Copy the env template
-cp .env.example .env             # Windows: copy .env.example .env
-
-# 4. Smoke test: run one quick simulation
+# 3. Smoke test: run one quick simulation
 make sim                         # or: python -m sim.run_experiment --policies baseline --runs 3 --smoke
 
-# 5. Run the tests
+# 4. Run the tests
 make test
 ```
 
 If `make sim` prints a short results table and `make test` passes, your environment is correct. You are ready to pick up your first issue.
+Per-machine settings (results folder, LLM URL, sweep defaults) are environment
+variables; `.env.example` lists them.
 
 The **full sweep** (all schedulers vs the attack) is:
 
 ```bash
 python -m sim.run_experiment --policies all --runs 20
-python analysis/make_graphs.py          # writes G1-G6 into figures/
+python -m sim.run_experiment --policies all --runs 20 --g3   # G3's attack conditions
+python -m analysis.make_graphs          # writes G1-G6 into figures/
 ```
 
 Or in one command, without activating the venv: `scripts/run_demo.sh` (run
@@ -86,6 +86,8 @@ mostly the `--g3` sweep, and prints each step.
 Add `--no-mimicry` for the naive-hog control, `--condition none|hiding|starvation`
 for one half of the attack, or `--g3` to sweep every condition in both modes into
 `results/aggregate_g3.csv` (see `docs/architecture.md`, "Attack conditions").
+A policy that raises fails the run with a non-zero exit, naming it; pass
+`--continue-on-error` to keep the CSVs of the policies that finished.
 Aggregates are medians across runs, with the interquartile range (`_q25`/`_q75`)
 for p95 latency, miss rate, and the detectors' ROC-AUC (`roc_auc` vs all
 legitimate processes, `roc_auc_benign` vs benign apps only; see "Detection
@@ -99,7 +101,7 @@ Hardware differs a lot across the team, so roles are assigned to avoid idle mach
 
 | Machine | Role |
 |---------|------|
-| Ibad's RTX 5070 Ti (32 GB) | Heaviest: neural policies (autoencoder, LSTM, 1D-CNN), local-LLM triage, large sweep runs. |
+| Ibad's RTX 5070 Ti (32 GB) | Heaviest: the neural autoencoder policy, local-LLM triage, large sweep runs. |
 | GTX 1660 Super PC (16 GB) | Moderate GPU: secondary neural/LLM work, parallel sweep shards. |
 | MacBook Pro M1 Pro | Development and compilation, the Python sim, and the Linux VM for memory/kernel testing. |
 | Khan's laptop (16 GB) | Lightweight: the CPU model sweep (sklearn is fine here), docs, reviews, PM. |
@@ -124,4 +126,4 @@ The systems pieces (C payloads, the scanner, Tracee, any real `scx` work) need *
 - **Real kernel:** the sched_ext spike passes on kernel 7.0 and the `scx_qmap` per-PID weight demo runs (#10, #11). The coupled attack on the real kernel (`detection/coupled_live.py`) shows stock EEVDF starving the scanner and `cpu.weight` / `SCHED_FIFO` protecting it.
 - **Memory (`memory/`):** V1-V4 payloads, the live scanner, and the G1/G2 sweeps (`memory/sweep_g1.py`, `sweep_g2.py`). The final runs on bare metal are in `captured/` (#56). Per scan, the scanner catches a hiding page about as often as it is exposed, at any scan interval: about dwell / 100 ms for V2, and a few ms more for V3 (0.05 of scans at 1 ms dwell); a longer interval only delays the first catch.
 - **Detection (`detection/`):** Tracee policy, aggregator, LLM triage, benign suite and the G5 harness. On the held-out capture the custom rule catches 15/15 hiding processes with 0/30 false alarms; Tracee's default signatures catch 0/15.
-- **Figures:** all six, G1-G6, build on a fresh clone with `scripts/run_demo.sh`, from `results/` or the committed `captured/` data (#16). The final report (#60) is in `report/`; the slides (#61) are tracked in milestone M5.
+- **Figures:** all six, G1-G6, build on a fresh clone with `scripts/run_demo.sh`, from `results/` or the committed `captured/` data (#16). The final report (#60) is in `report/`; the slides (#61) are in review as #68.

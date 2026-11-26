@@ -48,6 +48,7 @@ DEFAULT_DWELLS_MS = (1.0, 5.0, 10.0, 25.0)
 DEFAULT_SCAN_INTERVAL_S = 0.037
 DEFAULT_TOUCH_INTERVAL_MS = 100.0
 DEFAULT_PATTERN = "seq"
+DEFAULT_SEED = 1
 DEFAULT_REPS = 3
 DEFAULT_DURATION_S = 5.0
 MIN_ELAPSED_FRACTION = 0.9
@@ -107,6 +108,7 @@ class SweepCell:
     pattern: str
     rep: int
     duration_s: float
+    seed: int | None = None  # --seed for the random pattern, else the payload's default
 
 
 @dataclass(frozen=True)
@@ -166,6 +168,7 @@ def build_sweep_grid(
     pattern: str = DEFAULT_PATTERN,
     reps: int = DEFAULT_REPS,
     duration_s: float = DEFAULT_DURATION_S,
+    seed: int | None = None,
 ) -> list[SweepCell]:
     """Build G2 sweep cells with v1 ordered first and v1/v4 not multiplied by dwell."""
     ordered: list[str] = []
@@ -187,6 +190,7 @@ def build_sweep_grid(
                         pattern=pattern,
                         rep=rep,
                         duration_s=float(duration_s),
+                        seed=seed + rep if seed is not None and pattern == "random" else None,
                     )
                 )
     return cells
@@ -274,7 +278,7 @@ def _read_first_line(proc: subprocess.Popen[str], timeout_s: float) -> str | Non
         try:
             line = proc.stdout.readline()  # type: ignore[union-attr]
             line_q.put(line)
-        except Exception:
+        except (OSError, ValueError):  # ValueError: the pipe was closed under us
             line_q.put(None)
 
     t = threading.Thread(target=_reader, daemon=True)
@@ -399,6 +403,8 @@ def _launch_payload(
     if cell.variant in DWELL_VARIANTS:
         assert cell.dwell_ms is not None
         cmd.extend(["--dwell-ms", f"{cell.dwell_ms:g}"])
+    if cell.seed is not None:
+        cmd.extend(["--seed", str(cell.seed)])
 
     popen_kwargs: dict[str, object] = {
         "stdout": subprocess.PIPE,
@@ -756,6 +762,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="access pattern for all variants (default: seq)",
     )
     ap.add_argument(
+        "--seed",
+        type=int,
+        default=DEFAULT_SEED,
+        help="base PRNG seed for --pattern random; rep N runs with seed + N (default: 1)",
+    )
+    ap.add_argument(
         "--reps",
         type=int,
         default=None,
@@ -885,6 +897,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         pattern=args.pattern,
         reps=args.reps,
         duration_s=args.duration,
+        seed=args.seed,
     )
 
     pending_cells = [

@@ -1,6 +1,7 @@
 """A G5 batch scores the deepest process under each launcher, once (#13)."""
 
 import csv
+import subprocess
 
 import pytest
 
@@ -183,3 +184,30 @@ def test_a_finished_batch_records_every_label(batch_repo):
     with (batch_repo.dir / "batch_0.csv").open() as f:
         labels = {r["label"] for r in csv.DictReader(f)}
     assert labels == {"benign:jit-stub", "attacker:v2", "attacker:v3", "attacker:v4"}
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="needs Linux: /proc, process groups, prctl")
+def test_a_launcher_that_overruns_its_time_stops_the_capture_unrecorded(batch_repo, monkeypatch):
+    stub = batch_repo.dir.parent / "detection/benign/run_benign.py"
+    stub.write_text("import time\ntime.sleep(60)\n")  # ignores --seconds
+    monkeypatch.setattr(g5, "STOP_WAIT_S", 0.2)
+    with pytest.raises(SystemExit, match="benign:jit-stub still running"):
+        batch_repo([])
+    assert not (batch_repo.dir / "batch_0.csv").exists()
+
+
+def test_tracee_that_never_writes_an_event_stops_the_capture(tmp_path):
+    quiet = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        with pytest.raises(SystemExit, match="no event within 0.3 s"):
+            g5.wait_for_first_event(quiet, tmp_path / "events.json", tmp_path / "tracee.stderr", 0.3)
+    finally:
+        quiet.kill()
+        quiet.wait()
+
+
+@pytest.mark.parametrize("raw", ["", "x"])
+def test_an_empty_or_bad_invoker_uid_falls_back_to_root(monkeypatch, raw):
+    monkeypatch.setenv("PKEXEC_UID", raw)
+    monkeypatch.delenv("SUDO_UID", raising=False)
+    assert g5.invoker_uid_or_root() == 0

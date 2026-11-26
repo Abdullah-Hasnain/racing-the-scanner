@@ -1,6 +1,6 @@
 # Setup: GPU and CUDA (the NVIDIA machines)
 
-Only needed for the optional neural policies (autoencoder, LSTM, 1D-CNN) and for
+Only needed for the optional neural autoencoder policy and for
 running the local LLM used by the Tracee triage. Everything else is CPU-only.
 
 ## Drivers and CUDA
@@ -16,7 +16,7 @@ Install core deps first, then the matching torch build:
 pip install -r requirements.txt
 # pick the index URL matching your CUDA (example for CUDA 12.x):
 pip install torch --index-url https://download.pytorch.org/whl/cu124
-pip install -r requirements-gpu.txt   # xgboost, lightgbm
+pip install -r requirements-gpu.txt   # torch, for the autoencoder policy
 ```
 
 Verify:
@@ -24,8 +24,8 @@ Verify:
 python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 ```
 
-Set `RTS_USE_GPU=1` in your `.env`. The autoencoder policy then runs on the GPU;
-the sweep auto-detects torch and includes it.
+No setting is needed: when torch is installed the sweep includes the autoencoder
+policy, and it runs on the GPU whenever `torch.cuda.is_available()`.
 
 ## Local LLM for Tracee triage (D3)
 
@@ -37,9 +37,8 @@ ollama pull llama3.1:8b
 ollama serve          # serves on http://localhost:11434
 ```
 
-Point the triage at it in `.env`:
+The triage reads these environment variables (defaults shown; see `.env.example`):
 ```
-RTS_LLM_BACKEND=ollama
 RTS_LLM_URL=http://localhost:11434
 RTS_LLM_MODEL=llama3.1:8b
 ```

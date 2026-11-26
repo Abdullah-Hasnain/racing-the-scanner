@@ -68,6 +68,13 @@ static int g_user_mode_only = 0;
 static long long g_dwell_ns = 10000000LL;
 static volatile sig_atomic_t g_stop = 0;
 static atomic_int g_shutting_down = 0;
+static atomic_int g_fault_thread_failed = 0;
+
+/* A stop is a signal (g_stop, set by the handler) or a dead fault thread, which
+ * reports through an atomic rather than writing g_stop from another thread. */
+static int stopping(void) {
+    return g_stop || atomic_load_explicit(&g_fault_thread_failed, memory_order_acquire);
+}
 
 /* Decoy zero-fill pages mapped for external /proc/<pid>/mem readers. */
 static atomic_uchar g_decoy_active[NUM_PAGES];
@@ -104,7 +111,7 @@ static long long elapsed_us(const struct timespec *start) {
 }
 
 static void sleep_us_interruptible(long long us) {
-    if (us <= 0 || g_stop)
+    if (us <= 0 || stopping())
         return;
     struct timespec deadline;
     clock_gettime(CLOCK_MONOTONIC, &deadline);
@@ -114,7 +121,7 @@ static void sleep_us_interruptible(long long us) {
         deadline.tv_sec += 1;
         deadline.tv_nsec -= 1000000000L;
     }
-    while (!g_stop) {
+    while (!stopping()) {
         int rc = clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &deadline, NULL);
         if (rc == 0 || rc != EINTR)
             break;
@@ -296,6 +303,17 @@ static void *fault_thread(void *arg) {
             handle_worker_fault(addr, page, idx);
         else
             handle_external_fault(addr, page, idx);
+    }
+
+    if (!atomic_load_explicit(&g_shutting_down, memory_order_acquire)) {
+        /* An I/O error ended the loop, not a stop. With no handler left, a fault on
+         * a registered page would block forever, so unregister (which also wakes
+         * any thread already waiting) and stop the worker. The flag goes first, so
+         * a worker woken by the unregister already sees the stop. */
+        fprintf(stderr, "[v3] fault thread stopped on a userfaultfd error; stopping\n");
+        atomic_store_explicit(&g_fault_thread_failed, 1, memory_order_release);
+        struct uffdio_range all = { .start = (uintptr_t)g_buf, .len = g_len };
+        (void)ioctl(g_uffd, UFFDIO_UNREGISTER, &all);
     }
 
     if (g_active_page != NULL) {
@@ -585,8 +603,10 @@ int main(int argc, char **argv) {
     memset(&sa_stop, 0, sizeof(sa_stop));
     sa_stop.sa_handler = stop_handler;
     sigemptyset(&sa_stop.sa_mask);
-    sigaction(SIGINT, &sa_stop, NULL);
-    sigaction(SIGTERM, &sa_stop, NULL);
+    if (sigaction(SIGINT, &sa_stop, NULL) != 0 || sigaction(SIGTERM, &sa_stop, NULL) != 0) {
+        perror("sigaction SIGINT/SIGTERM");
+        return 1;
+    }
     pthread_sigmask(SIG_SETMASK, &old_mask, NULL);
 
     printf("[v3] pid=%d  dwell_ms=%.2f interval_ms=%.2f pattern=%s (buf=%p len=%zu). Ctrl-C to stop.\n",
@@ -604,7 +624,7 @@ int main(int argc, char **argv) {
     struct timespec t_start;
     clock_gettime(CLOCK_MONOTONIC, &t_start);
 
-    while (!g_stop) {
+    while (!stopping()) {
         if (duration_us > 0 && elapsed_us(&t_start) >= duration_us)
             break;
 
@@ -616,18 +636,20 @@ int main(int argc, char **argv) {
          * faulted in), so drop it and re-read to force a real fault. This relies
          * on RTS_MARKER (common/payload.h) having no 0x00 bytes, so real
          * cleartext never starts a page with zero. */
+        /* Check two offsets, not just the first byte, so a partial de-XOR or a
+         * wrong-offset copy is caught rather than passing on a single byte. Both
+         * reads retry, because the page can be dropped between them. */
+        size_t off2 = off + RTS_PAGE / 2;
         uint8_t val = vbuf[off];
-        for (int attempt = 0; val == 0 && attempt < MAX_ZERO_RETRIES && !g_stop; attempt++) {
+        uint8_t val2 = vbuf[off2];
+        for (int attempt = 0; (val == 0 || val2 == 0) && attempt < MAX_ZERO_RETRIES && !stopping(); attempt++) {
             (void)madvise(g_buf + off, RTS_PAGE, MADV_DONTNEED);
             val = vbuf[off];
+            val2 = vbuf[off2];
         }
-        if (val == 0 && g_stop)
+        if ((val == 0 || val2 == 0) && stopping())
             break;
 
-        /* Check two offsets, not just the first byte, so a partial de-XOR or a
-         * wrong-offset copy is caught rather than passing on a single byte. */
-        size_t off2 = off + RTS_PAGE / 2;
-        uint8_t val2 = vbuf[off2];
         uint8_t expected = (uint8_t)RTS_MARKER[off % mlen];
         uint8_t expected2 = (uint8_t)RTS_MARKER[off2 % mlen];
         if (val != expected || val2 != expected2) {
@@ -650,6 +672,8 @@ int main(int argc, char **argv) {
     ssize_t wr = write(g_stop_efd, &stop_val, sizeof(stop_val));
     (void)wr;
     pthread_join(th, NULL);
+    if (atomic_load_explicit(&g_fault_thread_failed, memory_order_acquire) && status == 0)
+        status = 3;
 
     (void)ioctl(g_uffd, UFFDIO_UNREGISTER, &reg.range);
 

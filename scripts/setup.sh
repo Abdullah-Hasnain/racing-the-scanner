@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One-command setup for macOS/Linux. Creates a venv, installs core deps,
-# copies the env template, and runs the smoke test.
+# and runs the smoke test.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -9,7 +9,6 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 pip install -r requirements.txt
-[ -f .env ] || cp .env.example .env
 
 echo "== smoke test =="
 python -m sim.run_experiment --policies baseline invariant --runs 2 --smoke

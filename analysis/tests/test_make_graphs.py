@@ -295,3 +295,31 @@ def test_g1_and_g2_keep_v1_v4_rows_with_an_empty_dwell(dirs):
     g2.loc[g2["variant"].isin(["v1", "v4"]), "dwell_ms"] = None
     assert {"v1", "v4"} <= set(mg.g1_summary(g1)["variant"])
     assert {"v1", "v4"} <= set(mg.g2_summary(g2)["variant"])
+
+
+def test_zero_denominators_are_dropped_with_a_warning(capsys):
+    g1 = pd.DataFrame(dict(variant="v2", dwell_ms=[1, 5], interval_s=0.037, catches=[0, 3], scans=[0, 10]))
+    s = mg.g1_summary(g1)
+    assert list(s["dwell_ms"]) == [5]
+    g5 = pd.DataFrame(dict(detector=["custom", "default_sigs"], triage_backend="", caught=[1, 0],
+                           n_attackers=[2, 0], false_alarms=0, n_benign=[3, 3]))
+    pooled, _ = mg.pool_detection(g5)
+    assert list(pooled["style"]) == ["custom"]
+    sim = pd.DataFrame(dict(policy="baseline", group="baseline", mimicry=True,
+                            condition=["none", "coupled"], p95_latency=[0.0, 5.0]))
+    assert mg.g3_slowdown(sim, None).empty
+    err = capsys.readouterr().err
+    assert "[G1] dropped 1" in err and "[G5] dropped 1" in err and "[G3] dropped" in err
+
+
+def test_g3_warns_when_the_sim_conditions_csv_is_missing(dirs, tmp_path, capsys):
+    cap = tmp_path / "captured"
+    cap.mkdir()
+    _live_csv(cap)
+    assert mg.g3_attack_conditions() is True
+    assert "aggregate_g3.csv missing" in capsys.readouterr().err
+
+
+def test_default_paths_are_anchored_to_the_repo_root():
+    repo = mg.Path(mg.__file__).resolve().parent.parent
+    assert mg._default_dir("RTS_NOT_SET_ANYWHERE", "results") == repo / "results"

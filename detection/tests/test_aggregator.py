@@ -190,3 +190,22 @@ def test_null_metadata_is_not_an_alert():
     line = json.dumps({"processId": 7, "processName": "v2", "eventName": "madvise",
                        "args": [], "metadata": None})
     assert features([line])[7]["tracee_alerts"] == 0
+
+
+def test_corrupt_lines_are_skipped_and_counted(capsys):
+    good = json.dumps({"processId": 7, "processName": "v2", "eventName": "madvise", "args": []})
+    procs = aggregate([good, '{"processId": 8, "eventN', "not json", ""])
+    assert list(procs) == [7]
+    assert "skipped 2 lines that are not JSON" in capsys.readouterr().err
+
+
+def test_cli_reads_an_input_file(tmp_path):
+    import subprocess
+    import sys
+
+    log = tmp_path / "events.json"
+    log.write_text(json.dumps({"processId": 7, "processName": "v2", "eventName": "madvise"}) + "\n",
+                   encoding="utf-8")
+    r = subprocess.run([sys.executable, "-m", "detection.aggregator", "--input", str(log)],
+                       capture_output=True, text=True, check=True)
+    assert json.loads(r.stdout)["pid"] == 7

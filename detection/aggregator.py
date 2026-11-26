@@ -17,6 +17,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 from collections import defaultdict
@@ -149,13 +150,15 @@ def _installs_segv_handler(event: dict) -> bool:
 
 def aggregate(lines) -> dict[int, ProcessFeatures]:
     procs: dict[int, ProcessFeatures] = {}
+    skipped = 0
     for line in lines:
         line = line.strip()
         if not line:
             continue
         try:
             ev = json.loads(line)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError:  # e.g. a last line cut short when Tracee was killed
+            skipped += 1
             continue
         pid = int(ev.get("processId", ev.get("pid", -1)))
         if pid < 0:
@@ -177,6 +180,8 @@ def aggregate(lines) -> dict[int, ProcessFeatures]:
             w.segv_handlers += 1
         if ((ev.get("metadata") or {}).get("Properties") or {}).get("signatureName"):
             w.alerts += 1
+    if skipped:
+        print(f"aggregator: skipped {skipped} lines that are not JSON", file=sys.stderr)
     return procs
 
 
@@ -185,8 +190,9 @@ def main() -> int:
     ap.add_argument("--input", help="Tracee JSON file; omit to read stdin")
     args = ap.parse_args()
 
-    src = open(args.input) if args.input else sys.stdin
-    for w in aggregate(src).values():
+    with open(args.input, encoding="utf-8") if args.input else contextlib.nullcontext(sys.stdin) as src:
+        procs = aggregate(src)
+    for w in procs.values():
         print(json.dumps(w.as_features()))
     return 0
 

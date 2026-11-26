@@ -49,3 +49,14 @@ def test_sigterm_stops_the_workload_and_removes_its_build(tmp_path):
         assert list(tmp_path.iterdir()) == [], "build directory left behind"
     finally:
         driver.kill()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="needs Linux libc mprotect")
+def test_a_failing_mprotect_raises_instead_of_being_ignored():
+    sys.path.insert(0, str(RUN.parent))
+    try:
+        import run_benign
+    finally:
+        sys.path.pop(0)
+    with pytest.raises(OSError, match="mprotect"):
+        run_benign.mprotect(1, 4096, 0)  # unaligned address: EINVAL

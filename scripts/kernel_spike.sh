@@ -102,6 +102,7 @@ echo "enable_seq: $seq0"
 say "load scx_simple for ~8s"
 timeout 8 "$SCX_SIMPLE" >/tmp/scx_simple.log 2>&1 &
 pid=$!
+trap 'kill "$pid" 2>/dev/null' EXIT   # a Ctrl-C here must not leave scx_simple loaded
 sleep 3
 say "confirm it is live (while running)"
 state1=$(cat "$SE/state" 2>/dev/null); ops1=$(cat "$SE/root/ops" 2>/dev/null)
@@ -114,6 +115,7 @@ echo "switch_all: $(cat "$SE/switch_all" 2>/dev/null)"
 echo "tasks by ext.enabled (from /proc/*/sched):"
 grep -h '^ext\.enabled' /proc/[0-9]*/sched 2>/dev/null | awk '{print "  ext.enabled=" $NF}' | sort | uniq -c
 wait "$pid"; rc=$?
+trap - EXIT
 echo "scx_simple exit code: $rc (124 = stopped by the timeout, expected)"
 say "scx_simple stdout"
 cat /tmp/scx_simple.log

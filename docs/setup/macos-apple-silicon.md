@@ -14,7 +14,6 @@ cd racing-the-scanner
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env
 
 make sim      # smoke test
 make test     # unit tests

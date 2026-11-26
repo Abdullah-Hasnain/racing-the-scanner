@@ -6,7 +6,7 @@ goes to the NVIDIA machines. Nobody waits on a machine they do not have.
 
 | Machine | Owner | Role | Runs |
 |---------|-------|------|------|
-| RTX 5070 Ti, 32 GB | Ibad (desktop) | Heaviest compute | neural policies (autoencoder, LSTM, CNN), local-LLM triage, large sweeps |
+| RTX 5070 Ti, 32 GB | Ibad (desktop) | Heaviest compute | the neural autoencoder policy, local-LLM triage, large sweeps |
 | GTX 1660 Super, 16 GB | you (desktop) | Moderate GPU | secondary neural/LLM work, parallel sweep shards, benign-suite runs |
 | MacBook Pro M1 Pro | you | Dev + build | coding, the Python sim, and the Linux VM for memory/kernel testing |
 | Laptop, 16 GB | Khan | Lightweight | the CPU model sweep (sklearn is fine), docs, reviews, PM |

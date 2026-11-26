@@ -644,3 +644,16 @@ def test_default_intervals_step_through_the_payloads_100ms_cycle():
     for interval in (*sweep_g1.DEFAULT_INTERVALS, *sweep_g1.SMOKE_INTERVALS):
         r = round(interval * 1000) % 100
         assert math.gcd(r, 100) == 1, interval
+
+
+def test_random_pattern_gets_a_different_seed_per_rep(monkeypatch, tmp_path):
+    cells = sweep_g1.build_sweep_grid(["v1", "v2"], [0.5], [10], pattern="random", reps=2, seed=100)
+    assert [(c.variant, c.rep, c.seed) for c in cells] == [
+        ("v1", 1, None), ("v1", 2, None), ("v2", 1, 101), ("v2", 2, 102)]
+    launched: list[list[str]] = []
+    monkeypatch.setattr(sweep_g1.subprocess, "Popen", lambda cmd, **kw: launched.append(cmd) or
+                        _FakeProc(pid=1, stdout_lines=["[v2] pid=1 ready\n"]))
+    sweep_g1._start_payload(tmp_path / "v2", cells[3], touch_interval_ms=100, pin_fn=None)
+    assert launched[0][launched[0].index("--seed") + 1] == "102"
+    seq = sweep_g1.build_sweep_grid(["v2"], [0.5], [10], pattern="seq", reps=1, seed=100)
+    assert seq[0].seed is None  # only the random pattern reads a seed

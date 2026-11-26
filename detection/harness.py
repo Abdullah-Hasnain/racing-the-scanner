@@ -168,7 +168,7 @@ def spawned_pids(log_lines: Iterable[str], root: int, comms: Sequence[str]) -> l
     for line in log_lines:
         try:
             ev = json.loads(line)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError:  # aggregate() warns about these once per log
             continue
         pid = ev.get("processId")
         if pid is None:
@@ -338,6 +338,10 @@ def run_live(args: argparse.Namespace, run_id: str) -> tuple[Path, int, int]:
     return log_path, workloads[0].pid, workloads[1].pid
 
 
+def _exit_on_signal(signum, frame):
+    raise SystemExit(128 + signum)
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="G5 detection harness (catch / FP rate)")
     ap.add_argument("--tracee-log", help="saved Tracee JSON log (offline mode)")
@@ -373,6 +377,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     attacker_comm, benign_comm = args.attacker_comm, args.benign_comm
     attacker_pid, benign_pid = args.attacker_pid, args.benign_pid
     if args.live:
+        for sig in (signal.SIGTERM, signal.SIGHUP):  # unwind, so run_live's finally stops everything
+            signal.signal(sig, _exit_on_signal)
         log_path, attacker_root, benign_root = run_live(args, run_id)
         mode = "live"
         # Label by the trees the harness started, narrowed by name, not by name alone.

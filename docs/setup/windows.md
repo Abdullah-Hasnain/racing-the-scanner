@@ -12,7 +12,6 @@ cd racing-the-scanner
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-copy .env.example .env
 
 python -m sim.run_experiment --policies baseline --runs 3 --smoke
 python -m pytest -q

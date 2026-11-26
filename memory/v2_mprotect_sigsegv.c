@@ -320,8 +320,11 @@ int main(int argc, char **argv) {
     memset(&sa_stop, 0, sizeof(sa_stop));
     sa_stop.sa_handler = stop_handler;
     sigemptyset(&sa_stop.sa_mask);
-    sigaction(SIGINT, &sa_stop, NULL);
-    sigaction(SIGTERM, &sa_stop, NULL);
+    if (sigaction(SIGINT, &sa_stop, NULL) != 0 || sigaction(SIGTERM, &sa_stop, NULL) != 0) {
+        perror("sigaction SIGINT/SIGTERM");
+        munmap(g_buf, g_len);
+        return 1;
+    }
 
     printf("[v2] pid=%d  dwell_ms=%.2f interval_ms=%.2f pattern=%s (buf=%p len=%zu). Ctrl-C to stop.\n",
            getpid(), dwell_ms, interval_ms, pattern_name(pat), (void *)g_buf, g_len);
