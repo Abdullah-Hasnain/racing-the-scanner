@@ -242,6 +242,7 @@ def _row():
     return dict.fromkeys(coupled_live.FIELDS, 0)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX chown and pwd")
 @pytest.mark.parametrize("raw", ["", "abc", " "])
 def test_write_ignores_an_empty_or_bad_invoker_uid(tmp_path, monkeypatch, raw):
     monkeypatch.setenv("PKEXEC_UID", raw)
@@ -251,6 +252,7 @@ def test_write_ignores_an_empty_or_bad_invoker_uid(tmp_path, monkeypatch, raw):
     assert (tmp_path / "c.csv").exists()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX chown, getuid and pwd")
 def test_write_chowns_the_results_dir_only_when_it_created_it(tmp_path, monkeypatch):
     monkeypatch.setenv("PKEXEC_UID", str(os.getuid()))
     owned: list[str] = []
@@ -262,6 +264,7 @@ def test_write_chowns_the_results_dir_only_when_it_created_it(tmp_path, monkeypa
     assert owned == ["c.csv"]
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="needs Linux sched_getaffinity")
 def test_a_cpu_outside_the_affinity_mask_is_refused(monkeypatch):
     monkeypatch.setattr(os, "geteuid", lambda: 0)
     bad = max(os.sched_getaffinity(0)) + 1
