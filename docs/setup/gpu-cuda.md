@@ -16,7 +16,7 @@ Install core deps first, then the matching torch build:
 pip install -r requirements.txt
 # pick the index URL matching your CUDA (example for CUDA 12.x):
 pip install torch --index-url https://download.pytorch.org/whl/cu124
-pip install -r requirements-gpu.txt   # xgboost, lightgbm
+pip install -r requirements-gpu.txt   # torch, for the autoencoder policy
 ```
 
 Verify:

@@ -200,10 +200,9 @@ def _batch(args: argparse.Namespace, i: int, run_dir: Path, user: pwd.struct_pas
         for label, p in roots.items():
             try:
                 p.wait(timeout=BENIGN_S + STOP_WAIT_S)
-            except subprocess.TimeoutExpired:  # _stop below ends it; its events are already logged
-                print(f"batch {i}: {label} still running after {BENIGN_S + STOP_WAIT_S} s; stopping it",
-                      file=sys.stderr)
-                break
+            except subprocess.TimeoutExpired:  # the finally below stops it; the batch isn't recorded
+                sys.exit(f"batch {i}: {label} still running after {BENIGN_S + STOP_WAIT_S} s; "
+                         "stopped the capture")
     finally:
         _stop(roots.values())
     # Only a batch that passed its check and ran to the end is written, so score
@@ -214,7 +213,7 @@ def _batch(args: argparse.Namespace, i: int, run_dir: Path, user: pwd.struct_pas
         w.writerows(rows)
 
 
-def invoker_uid() -> int:
+def invoker_uid_or_root() -> int:
     """The uid that ran pkexec or sudo; root when unset, empty or not a number."""
     for key in ("PKEXEC_UID", "SUDO_UID"):
         raw = os.environ.get(key, "").strip()
@@ -242,7 +241,7 @@ def capture(args: argparse.Namespace) -> int:
 
     for sig in (signal.SIGTERM, signal.SIGHUP):
         signal.signal(sig, _exit_on_signal)
-    user = pwd.getpwuid(invoker_uid())
+    user = pwd.getpwuid(invoker_uid_or_root())
     args.repo = str(Path(args.repo).resolve())
     run_id = time.strftime("%Y%m%d-%H%M%S")
     run_dir = Path(args.repo) / "results/g5" / run_id

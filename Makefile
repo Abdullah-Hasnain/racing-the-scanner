@@ -27,8 +27,8 @@ sim:
 	python -m sim.run_experiment --policies baseline --runs 3 --smoke
 
 sweep:
-	python -m sim.run_experiment --policies all --runs 20
-	python -m sim.run_experiment --policies all --runs 20 --g3
+	python -m sim.run_experiment --policies all
+	python -m sim.run_experiment --policies all --g3
 
 graphs:
 	python -m analysis.make_graphs

@@ -54,9 +54,10 @@ def _iqr(row: pd.Series, metric: str, spec: str) -> str:
     return f"{row[metric]:{spec}} [{row[f'{metric}_q25']:{spec}}, {row[f'{metric}_q75']:{spec}}]"
 
 
-def _sweep(names: list[str], cfg: SimConfig, runs: int, failed: list[str]) -> list[dict]:
-    """Run each policy; a policy that raises is printed and added to `failed`."""
+def _sweep(names: list[str], cfg: SimConfig, runs: int) -> tuple[list[dict], list[str]]:
+    """Run each policy; returns the per-run rows and the policies that raised."""
     per_run: list[dict] = []
+    failed: list[str] = []
     for name in names:
         try:
             rows = run_policy(name, cfg, runs=runs)
@@ -68,26 +69,28 @@ def _sweep(names: list[str], cfg: SimConfig, runs: int, failed: list[str]) -> li
         except Exception as exc:  # one bad policy must not kill the sweep
             print(f"  {name:<14} FAILED: {exc}", file=sys.stderr)
             failed.append(f"{name} ({cfg.condition}, {_mode(cfg.mimicry)})")
-    return per_run
+    return per_run, failed
 
 
-def _failed(failed: list[str], keep_going: bool) -> int:
+def _exit_status(failed: list[str], continue_on_error: bool) -> int:
     """Exit status for the sweep: 1 when a policy failed, unless --continue-on-error."""
     if not failed:
         return 0
     print(f"\n{len(failed)} policy runs failed and are missing from the CSVs: {', '.join(failed)}",
           file=sys.stderr)
-    return 0 if keep_going else 1
+    return 0 if continue_on_error else 1
 
 
-def _g3(names: list[str], cfg: SimConfig, runs: int, out: Path, keep_going: bool) -> int:
+def _g3(names: list[str], cfg: SimConfig, runs: int, out: Path, continue_on_error: bool) -> int:
     """Every attack condition in both attacker modes, for G3."""
     per_run: list[dict] = []
     failed: list[str] = []
     for condition in CONDITIONS:
         for mimicry in (False, True):
             print(f"\n== {condition}, {_mode(mimicry)} ==")
-            per_run.extend(_sweep(names, replace(cfg, condition=condition, mimicry=mimicry), runs, failed))
+            rows, bad = _sweep(names, replace(cfg, condition=condition, mimicry=mimicry), runs)
+            per_run.extend(rows)
+            failed.extend(bad)
     if not per_run:
         print("no results produced")
         return 1
@@ -106,7 +109,7 @@ def _g3(names: list[str], cfg: SimConfig, runs: int, out: Path, keep_going: bool
         with pd.option_context("display.width", 160, "display.max_rows", None):
             print(table.round(2).to_string(na_rep="n/a"))
     print(f"\nwrote {out}/aggregate_g3.csv and per_run_g3.csv")
-    return _failed(failed, keep_going)
+    return _exit_status(failed, continue_on_error)
 
 
 def main() -> int:
@@ -145,8 +148,7 @@ def main() -> int:
     if args.g3:
         return _g3(names, cfg, args.runs, out, args.continue_on_error)
 
-    failed: list[str] = []
-    per_run = _sweep(names, cfg, args.runs, failed)
+    per_run, failed = _sweep(names, cfg, args.runs)
     if not per_run:
         print("no results produced")
         return 1
@@ -176,7 +178,7 @@ def main() -> int:
     print(f"\nwrote {out}/aggregate_{tag}.csv and per_run_{tag}.csv")
     print(f"policies available: {len(all_policies())} (baseline + {len(augmented_policies())} "
           f"augmented + {len(reservation_names())} reservation + invariant)")
-    return _failed(failed, args.continue_on_error)
+    return _exit_status(failed, args.continue_on_error)
 
 
 if __name__ == "__main__":

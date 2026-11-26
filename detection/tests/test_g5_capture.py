@@ -187,13 +187,13 @@ def test_a_finished_batch_records_every_label(batch_repo):
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="needs Linux: /proc, process groups, prctl")
-def test_a_launcher_that_overruns_its_time_is_stopped_and_the_batch_kept(batch_repo, monkeypatch, capsys):
+def test_a_launcher_that_overruns_its_time_stops_the_capture_unrecorded(batch_repo, monkeypatch):
     stub = batch_repo.dir.parent / "detection/benign/run_benign.py"
     stub.write_text("import time\ntime.sleep(60)\n")  # ignores --seconds
     monkeypatch.setattr(g5, "STOP_WAIT_S", 0.2)
-    batch_repo([])
-    assert "benign:jit-stub still running" in capsys.readouterr().err
-    assert (batch_repo.dir / "batch_0.csv").exists()
+    with pytest.raises(SystemExit, match="benign:jit-stub still running"):
+        batch_repo([])
+    assert not (batch_repo.dir / "batch_0.csv").exists()
 
 
 def test_tracee_that_never_writes_an_event_stops_the_capture(tmp_path):
@@ -210,4 +210,4 @@ def test_tracee_that_never_writes_an_event_stops_the_capture(tmp_path):
 def test_an_empty_or_bad_invoker_uid_falls_back_to_root(monkeypatch, raw):
     monkeypatch.setenv("PKEXEC_UID", raw)
     monkeypatch.delenv("SUDO_UID", raising=False)
-    assert g5.invoker_uid() == 0
+    assert g5.invoker_uid_or_root() == 0
