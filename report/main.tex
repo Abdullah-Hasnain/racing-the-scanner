@@ -287,8 +287,8 @@ period ratio, nice $-20$ attacker on one core).}
 \label{fig:g3}
 \end{figure*}
 Fig.~\ref{fig:g3} separates the two halves of the attack. Hiding alone barely
-slows the scanner, and every reservation stays at 1.0$\times$ in every
-condition. In the simulation, starvation and the coupled attack slow the
+slows the scanner, and every reservation but \texttt{cpu.max} (up to
+1.4$\times$, no miss) stays at 1.0$\times$ throughout. In the simulation, starvation and the coupled attack slow the
 scanner 7.0$\times$ under EEVDF, and the ML policies do little better under
 mimicry (4.9$\times$ for Isolation Forest, 6.0$\times$ for random forest).
 
