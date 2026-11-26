@@ -102,6 +102,7 @@ echo "enable_seq: $seq0"
 say "load scx_simple for ~8s"
 timeout 8 "$SCX_SIMPLE" >/tmp/scx_simple.log 2>&1 &
 pid=$!
+trap 'kill "$pid" 2>/dev/null' EXIT   # a Ctrl-C here must not leave scx_simple loaded
 sleep 3
 say "confirm it is live (while running)"
 state1=$(cat "$SE/state" 2>/dev/null); ops1=$(cat "$SE/root/ops" 2>/dev/null)

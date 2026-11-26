@@ -55,7 +55,8 @@ if [ "$LIVE" = 1 ]; then
   echo "== live: G5 Tracee capture (root; needs Tracee v0.23.2, node, go, java, Ollama) =="
   move_aside detection_g5.csv
   pkexec "$PWD/$PY" "$PWD/detection/g5_capture.py" capture --repo "$PWD"
-  run_dir=$(ls -td results/g5/*/ | head -1)
+  runs=(results/g5/*/)        # run ids are timestamps, so the last one is the newest
+  run_dir=${runs[-1]}
   "$PY" detection/g5_capture.py score "$run_dir"
 
   echo "(G1/G2 are not re-run here: memory/sweep_g1.py and sweep_g2.py take ~40 min as root; their final runs are in captured/, #56.)"

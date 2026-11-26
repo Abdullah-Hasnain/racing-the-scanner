@@ -82,7 +82,7 @@ cleanup() {
   [ -n "$APID" ] && kill "$APID" 2>/dev/null
   if [ -n "$QPID" ]; then kill -INT "$QPID" 2>/dev/null; wait "$QPID" 2>/dev/null; fi
   VPID='' APID='' QPID=''
-  rm -f "$PIN"
+  rm -f "$PIN" "${RES:-}"
 }
 trap cleanup EXIT
 taskset -cp 1 $$ >/dev/null   # keep this script and scx_qmap off CPU 0
@@ -128,7 +128,8 @@ sample() {  # "victim% attacker%" over one WINDOW
 RES=$(mktemp)
 phase() {  # name, attacker weight (100 = no override)
   local name=$1 w=$2 i out
-  if [ "$w" = 100 ]; then bash "$SETW" "$APID" clear; else bash "$SETW" "$APID" "$w"; fi
+  if [ "$w" = 100 ]; then bash "$SETW" "$APID" clear; else bash "$SETW" "$APID" "$w"; fi ||
+    { echo "FAIL: could not set the attacker's weight to $w"; exit 1; }
   say "phase $name: attacker weight $w$([ "$w" = 100 ] && echo ' (no override)')"
   echo "map: $(bash "$SETW" show | tr -s ' \n' ' ')"
   sleep 1   # a new weight takes effect at the attacker's next slice
