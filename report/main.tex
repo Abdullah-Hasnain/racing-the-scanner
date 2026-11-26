@@ -112,8 +112,8 @@ read--write regions in 1~MiB chunks, and searches them for the marker. It logs
 each scan's duration with running p50/p95/p99 percentiles, and can compute a
 per-page Shannon entropy (threshold 7.2~bits/byte). The entropy pass is
 telemetry only here: the XOR-masked marker measures about 3.25~bits/byte, below
-the threshold, and the timing runs disable it because it makes each scan about
-40$\times$ slower.
+the threshold, and the timing runs disable it because it makes each scan much
+slower.
 
 The catch-rate (Fig.~\ref{fig:g1}) and cost (Fig.~\ref{fig:g2}) experiments
 were measured on bare metal (Intel Core i7-14700F, Linux 7.0.0-44, payload and
@@ -192,13 +192,13 @@ for 40~s, and V2 (a different timing each batch), V3 and V4 for 20~s.
 \section{Results}
 
 \subsection{Hiding works only while hidden}
-\begin{figure}[t]
+\begin{figure*}[t]
 \centering
-\includegraphics[width=\columnwidth]{G1_catch_rate.png}
+\includegraphics[width=0.85\textwidth]{G1_catch_rate.png}
 \caption{Per-scan catch rate against scan interval, all scans of a cell
 pooled, 95\% Wilson intervals.}
 \label{fig:g1}
-\end{figure}
+\end{figure*}
 Fig.~\ref{fig:g1}: the scanner catches V1 on every scan and V4 on none, at every
 interval. For V2 the per-scan catch rate is the fraction of time a page is
 exposed: 0.007, 0.055, 0.105 and 0.252 at dwell times of 1, 5, 10 and 25~ms
@@ -210,13 +210,13 @@ and the wide bars at long intervals reflect 12 to 21 scans per cell, not a
 trend. Each interval is 37~ms past a multiple of 100~ms; multiples of 50~ms
 phase-lock to the payload's cycle.
 
-\begin{figure}[t]
+\begin{figure*}[t]
 \centering
-\includegraphics[width=\columnwidth]{G2_pareto.png}
+\includegraphics[width=0.85\textwidth]{G2_pareto.png}
 \caption{The attacker's slowdown against the share of scans it evades
 (left), and the page faults it pays (right).}
 \label{fig:g2}
-\end{figure}
+\end{figure*}
 Fig.~\ref{fig:g2}: hiding is expensive. In a tight loop every access faults, so
 V2 runs about 1,600$\times$ slower than V1 (386K faults/s) and V3 about
 2,200$\times$ slower (291K faults/s), to evade 72--99\% of scans every 37~ms.
@@ -392,7 +392,8 @@ batches), and a hider that relocks a different address range than it unlocked
 would evade the relock rule.
 \item A couple of supporting observations, the nice-0 control and the Node.js
 and JVM flip counts, rest on captures that were logged but not committed; every
-figure and table rests on committed data.
+figure and table rests on committed data or on the deterministic simulation
+that \texttt{scripts/run\_demo.sh} regenerates.
 \end{itemize}
 
 \subsection{Corrections we made along the way}
