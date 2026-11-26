@@ -1,4 +1,4 @@
-"""Write assets/data/results.js: every number the slides chart, read from the repo.
+"""Write assets/results.js: every number the slides chart, read from the repo.
 
 The sources are the report's sources: captured/*.csv (bare-metal runs and the Tracee
 capture) and the results/ that scripts/run_demo.sh regenerates (the simulation).
@@ -17,7 +17,7 @@ from pathlib import Path
 import pandas as pd
 
 repo, res = Path(sys.argv[1]), Path(sys.argv[2])
-out_path = Path(sys.argv[3]) if len(sys.argv) > 3 else Path(__file__).resolve().parent.parent / "assets/data/results.js"
+out_path = Path(sys.argv[3]) if len(sys.argv) > 3 else Path(__file__).resolve().parent.parent / "assets/results.js"
 cap = repo / "captured"
 out = {}
 

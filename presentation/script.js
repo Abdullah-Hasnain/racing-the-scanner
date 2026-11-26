@@ -1,6 +1,6 @@
 /* Racing the Scanner: presentation logic.
    Reveal.js runs the deck; Chart.js draws the figures. Every charted number is read
-   from window.RTS (assets/data/results.js, generated from the repo by
+   from window.RTS (assets/results.js, generated from the repo by
    tools/extract_data.py), so nothing on a chart is typed in by hand. */
 (function () {
   "use strict";

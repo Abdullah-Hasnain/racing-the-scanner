@@ -5,14 +5,14 @@
 A browser that cached an older styles.css or script.js keeps using it even after the
 HTML changes, so a new slide can render unstyled. A hash in the URL changes whenever
 the file does, which makes the browser fetch it again. Rerun after editing styles.css,
-script.js or assets/data/results.js. Standard library only.
+script.js or assets/results.js. Standard library only.
 """
 import hashlib
 import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-ASSETS = ["styles.css", "script.js", "assets/data/results.js"]
+ASSETS = ["styles.css", "script.js", "assets/results.js"]
 
 html_path = ROOT / "index.html"
 html = html_path.read_text(encoding="utf-8")

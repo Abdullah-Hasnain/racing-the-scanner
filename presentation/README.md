@@ -51,10 +51,10 @@ index.html                   the slides and the speaker notes (<aside class="not
 styles.css                   layout, typography, palette
 script.js                    Reveal.js setup and the eight Chart.js figures
 SCRIPT.md                    the full 15-minute script with a timing table (generated)
-assets/data/results.js       every charted number (generated, see below)
+assets/results.js       every charted number (generated, see below)
 assets/vendor/               Reveal.js and Chart.js (with their licences)
 assets/fonts/                Inter and Source Serif 4 (SIL Open Font Licence)
-tools/extract_data.py        rebuilds assets/data/results.js from the repo
+tools/extract_data.py        rebuilds assets/results.js from the repo
 tools/build_script.py        rebuilds SCRIPT.md from the speaker notes
 tools/stamp_assets.py        stamps the CSS/JS links with a content hash (?v=...)
 ```
