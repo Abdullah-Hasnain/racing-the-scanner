@@ -194,8 +194,11 @@ int main(int argc, char **argv) {
     memset(&sa_stop, 0, sizeof(sa_stop));
     sa_stop.sa_handler = stop_handler;
     sigemptyset(&sa_stop.sa_mask);
-    sigaction(SIGINT, &sa_stop, NULL);
-    sigaction(SIGTERM, &sa_stop, NULL);
+    if (sigaction(SIGINT, &sa_stop, NULL) != 0 || sigaction(SIGTERM, &sa_stop, NULL) != 0) {
+        perror("sigaction SIGINT/SIGTERM");
+        free(buf);
+        return 1;
+    }
 
     printf("[v1] pid=%d  interval_ms=%.2f pattern=%s (len=%zu). Ctrl-C to stop.\n",
            getpid(), interval_ms, pattern_name(pat), (size_t)RTS_BUFSZ);

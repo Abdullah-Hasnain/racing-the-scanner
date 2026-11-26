@@ -814,3 +814,14 @@ def test_g2_csv_compatible_with_make_graphs(tmp_path: Path, monkeypatch: pytest.
     assert mg.g2_pareto() is True
     png = fig_dir / "G2_pareto.png"
     assert png.exists() and png.read_bytes()[:4] == b"\x89PNG"
+
+
+def test_random_pattern_gets_a_different_seed_per_rep(monkeypatch, tmp_path):
+    cells = sweep_g2.build_sweep_grid(["v1", "v2"], [10], pattern="random", reps=2, seed=100)
+    assert [(c.variant, c.rep, c.seed) for c in cells] == [
+        ("v1", 1, 101), ("v1", 2, 102), ("v2", 1, 101), ("v2", 2, 102)]
+    launched: list[list[str]] = []
+    monkeypatch.setattr(sweep_g2.subprocess, "Popen", lambda cmd, **kw: launched.append(cmd) or
+                        _FakeEvasionProc(pid=1, stdout_lines=["[v2] pid=1 ready\n"]))
+    sweep_g2._launch_payload(tmp_path / "v2", cells[3], interval_ms=100, duration_s=1, pin_fn=None)
+    assert launched[0][launched[0].index("--seed") + 1] == "102"

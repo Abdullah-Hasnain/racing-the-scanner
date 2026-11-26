@@ -94,7 +94,7 @@ try:
     import yara  # type: ignore
 
     _HAVE_YARA = True
-except Exception:
+except (ImportError, OSError):  # not installed, or libyara itself fails to load
     _HAVE_YARA = False
 
 
@@ -377,8 +377,8 @@ def _chown_if_sudo(path: Path) -> None:
     uid, gid = ugid
     try:
         os.chown(path, uid, gid)
-    except OSError:
-        pass
+    except OSError as exc:
+        print(f"[scanner] warning: could not hand {path} back to uid {uid}: {exc}", file=sys.stderr)
 
 
 def _ensure_parent_dir(path: Path) -> None:
@@ -391,8 +391,8 @@ def _ensure_parent_dir(path: Path) -> None:
         for d in reversed(missing):
             try:
                 os.chown(d, uid, gid)
-            except OSError:
-                pass
+            except OSError as exc:
+                print(f"[scanner] warning: could not hand {d} back to uid {uid}: {exc}", file=sys.stderr)
 
 
 def _validate_csv_header(path: Path, expected_fields: Sequence[str]) -> bool:
